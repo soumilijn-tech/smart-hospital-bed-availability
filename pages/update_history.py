@@ -2,8 +2,9 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
+from pathlib import Path
 
-DB_PATH = "/content/smart_hospital/database/hospital.db"
+DB_PATH = Path(__file__).resolve().parent.parent / "database" / "hospital.db"
 
 st.set_page_config(
     page_title="Bed Update History",
