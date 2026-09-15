@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 
 from pathlib import Path
+from streamlit_autorefresh import st_autorefresh
 
 from services.hospitals import (
     geocode_location,
@@ -29,6 +30,16 @@ st.set_page_config(
 
 
 # =========================
+# AUTOMATIC REFRESH
+# =========================
+
+st_autorefresh(
+    interval=30 * 1000,
+    key="bed_availability_refresh"
+)
+
+
+# =========================
 # HEADER
 # =========================
 
@@ -36,6 +47,10 @@ st.title("🏥 Smart Hospital Bed Availability System")
 
 st.write(
     "Find nearby hospitals and check current bed availability."
+)
+
+st.info(
+    "🔄 Bed availability automatically refreshes every 30 seconds."
 )
 
 
@@ -379,7 +394,7 @@ try:
 
     df = get_hospital_data()
 
-except Exception as e:
+except Exception:
 
     st.error(
         "❌ Unable to load hospital bed data."
@@ -417,7 +432,9 @@ else:
     )
 
 
-    st.markdown("### 📊 Overall Bed Summary")
+    st.markdown(
+        "### 📊 Overall Bed Summary"
+    )
 
 
     col1, col2, col3 = st.columns(3)
@@ -640,4 +657,4 @@ st.divider()
 st.caption(
     "⚠️ Bed availability shown in this prototype "
     "is based on registered/demo hospital data."
-        )
+                )
