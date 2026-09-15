@@ -4,6 +4,8 @@ import sqlite3
 
 from pathlib import Path
 
+from pathlib import Path
+
 DB_PATH = Path(__file__).resolve().parent.parent / "database" / "hospital.db"
 
 st.set_page_config(
