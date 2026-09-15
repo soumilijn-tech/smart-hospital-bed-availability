@@ -1,22 +1,32 @@
-
 import streamlit as st
 import sqlite3
 import pandas as pd
+
+from pathlib import Path
 
 from services.hospitals import (
     geocode_location,
     cached_hospital_search
 )
 
-from pathlib import Path
+
+# =========================
+# DATABASE PATH
+# =========================
 
 DB_PATH = Path(__file__).resolve().parent / "database" / "hospital.db"
+
+
+# =========================
+# PAGE CONFIG
+# =========================
 
 st.set_page_config(
     page_title="Smart Hospital Bed Availability",
     page_icon="🏥",
     layout="wide"
 )
+
 
 # =========================
 # HEADER
@@ -27,6 +37,7 @@ st.title("🏥 Smart Hospital Bed Availability System")
 st.write(
     "Find nearby hospitals and check current bed availability."
 )
+
 
 # =========================
 # NAVIGATION
@@ -49,6 +60,7 @@ with col3:
 with col4:
     if st.button("🏥 Patient Dashboard", use_container_width=True):
         st.switch_page("pages/patient_dashboard.py")
+
 
 st.divider()
 
@@ -85,7 +97,10 @@ if st.button(
 
     else:
 
-        # Geocoding
+        # -------------------------
+        # GEOCODING
+        # -------------------------
+
         with st.spinner(
             "📍 Finding your location..."
         ):
@@ -96,7 +111,7 @@ if st.button(
                     location
                 )
 
-            except Exception as e:
+            except Exception:
 
                 coordinates = None
 
@@ -117,7 +132,11 @@ if st.button(
             lat = coordinates["lat"]
             lon = coordinates["lon"]
 
-            # Hospital search
+
+            # -------------------------
+            # HOSPITAL SEARCH
+            # -------------------------
+
             with st.spinner(
                 "🏥 Searching nearby hospitals..."
             ):
@@ -130,7 +149,7 @@ if st.button(
                         radius * 1000
                     )
 
-                except Exception as e:
+                except Exception:
 
                     hospitals = []
 
@@ -153,19 +172,22 @@ if st.button(
                     f"🏥 {len(hospitals)} hospital(s) found!"
                 )
 
+
                 # =========================
                 # MAP
                 # =========================
 
                 st.subheader("🗺️ Hospital Map")
 
-                map_df = pd.DataFrame([
-                    {
-                        "latitude": h["latitude"],
-                        "longitude": h["longitude"]
-                    }
-                    for h in hospitals
-                ])
+                map_df = pd.DataFrame(
+                    [
+                        {
+                            "latitude": h["latitude"],
+                            "longitude": h["longitude"]
+                        }
+                        for h in hospitals
+                    ]
+                )
 
                 st.map(
                     map_df,
@@ -183,6 +205,7 @@ if st.button(
                     "🏥 Nearby Hospitals"
                 )
 
+
                 for hospital in hospitals:
 
                     with st.container(
@@ -193,7 +216,9 @@ if st.button(
                             f"### 🏥 {hospital['name']}"
                         )
 
-                        col1, col2 = st.columns(2)
+
+                        col1, col2, col3 = st.columns(3)
+
 
                         with col1:
 
@@ -207,12 +232,16 @@ if st.button(
                                 f"{hospital['phone']}"
                             )
 
+
                         with col2:
 
                             st.metric(
                                 "📏 Distance",
                                 f"{hospital['distance']} KM"
                             )
+
+
+                        with col3:
 
                             directions_url = (
                                 "https://www.google.com/maps/dir/"
@@ -267,7 +296,13 @@ def get_hospital_data():
     LEFT JOIN beds b
         ON h.hospital_id = b.hospital_id
 
-    GROUP BY h.hospital_id
+    GROUP BY
+        h.hospital_id,
+        h.name,
+        h.address,
+        h.latitude,
+        h.longitude,
+        h.phone
     """
 
     df = pd.read_sql_query(
@@ -277,36 +312,35 @@ def get_hospital_data():
 
     conn.close()
 
+
+    df["total_beds"] = (
+        pd.to_numeric(
+            df["total_beds"],
+            errors="coerce"
+        ).fillna(0)
+    )
+
+    df["available_beds"] = (
+        pd.to_numeric(
+            df["available_beds"],
+            errors="coerce"
+        ).fillna(0)
+    )
+
+
     df["occupied_beds"] = (
         df["total_beds"]
         -
         df["available_beds"]
     )
 
+
     return df
-def get_available_beds_by_name(hospital_name):
-    conn = sqlite3.connect(DB_PATH)
 
-    query = """
-    SELECT COALESCE(SUM(b.available_beds), 0) AS available_beds
-    FROM hospitals h
-    LEFT JOIN beds b
-        ON h.hospital_id = b.hospital_id
-    WHERE LOWER(h.name) = LOWER(?)
-    """
 
-    result = pd.read_sql_query(
-        query,
-        conn,
-        params=(hospital_name,)
-    )
-
-    conn.close()
-
-    if result.empty:
-        return 0
-
-    return int(result.iloc[0]["available_beds"])
+# =========================
+# BED DETAILS
+# =========================
 
 def get_bed_details(hospital_id):
 
@@ -337,7 +371,21 @@ def get_bed_details(hospital_id):
     return df
 
 
-df = get_hospital_data()
+# =========================
+# LOAD DATABASE
+# =========================
+
+try:
+
+    df = get_hospital_data()
+
+except Exception as e:
+
+    st.error(
+        "❌ Unable to load hospital bed data."
+    )
+
+    st.stop()
 
 
 # =========================
@@ -352,6 +400,60 @@ if df.empty:
 
 else:
 
+    # -------------------------
+    # SUMMARY
+    # -------------------------
+
+    total_beds = int(
+        df["total_beds"].sum()
+    )
+
+    available_beds = int(
+        df["available_beds"].sum()
+    )
+
+    occupied_beds = int(
+        df["occupied_beds"].sum()
+    )
+
+
+    st.markdown("### 📊 Overall Bed Summary")
+
+
+    col1, col2, col3 = st.columns(3)
+
+
+    with col1:
+
+        st.metric(
+            "🛏️ Total Beds",
+            total_beds
+        )
+
+
+    with col2:
+
+        st.metric(
+            "✅ Available Beds",
+            available_beds
+        )
+
+
+    with col3:
+
+        st.metric(
+            "🔴 Occupied Beds",
+            occupied_beds
+        )
+
+
+    st.divider()
+
+
+    # -------------------------
+    # HOSPITAL CARDS
+    # -------------------------
+
     for _, hospital in df.iterrows():
 
         with st.container(
@@ -361,15 +463,10 @@ else:
             st.markdown(
                 f"### 🏥 {hospital['name']}"
             )
-available_beds = get_available_beds_by_name(
-    hospital["name"]
-)
 
-st.metric(
-    "🛏️ Available Beds",
-    available_beds
-)
+
             col1, col2, col3 = st.columns(3)
+
 
             with col1:
 
@@ -380,26 +477,95 @@ st.metric(
                     )
                 )
 
+
             with col2:
 
-                st.metric(
-                    "✅ Available",
-                    int(
-                        hospital["available_beds"]
-                    )
+                available = int(
+                    hospital["available_beds"]
                 )
+
+                st.metric(
+                    "✅ Available Beds",
+                    available
+                )
+
 
             with col3:
 
                 st.metric(
-                    "🔴 Occupied",
+                    "🔴 Occupied Beds",
                     int(
                         hospital["occupied_beds"]
                     )
                 )
 
 
-            # Bed details
+            # -------------------------
+            # BED STATUS
+            # -------------------------
+
+            if available == 0:
+
+                st.error(
+                    "🔴 No beds currently available"
+                )
+
+            elif available <= 2:
+
+                st.warning(
+                    "🟡 Very limited beds available"
+                )
+
+            else:
+
+                st.success(
+                    f"🟢 {available} beds available"
+                )
+
+
+            # -------------------------
+            # HOSPITAL INFORMATION
+            # -------------------------
+
+            col1, col2 = st.columns(2)
+
+
+            with col1:
+
+                st.write(
+                    f"📍 **Address:** "
+                    f"{hospital['address']}"
+                )
+
+                st.write(
+                    f"📞 **Phone:** "
+                    f"{hospital['phone']}"
+                )
+
+
+            with col2:
+
+                if pd.notna(
+                    hospital["latitude"]
+                ) and pd.notna(
+                    hospital["longitude"]
+                ):
+
+                    directions_url = (
+                        "https://www.google.com/maps/dir/"
+                        f"{hospital['latitude']},"
+                        f"{hospital['longitude']}"
+                    )
+
+                    st.link_button(
+                        "🗺️ Open Location",
+                        directions_url
+                    )
+
+
+            # -------------------------
+            # BED TYPE DETAILS
+            # -------------------------
 
             bed_df = get_bed_details(
                 int(
@@ -411,8 +577,9 @@ st.metric(
             if not bed_df.empty:
 
                 st.write(
-                    "**Bed Type Availability**"
+                    "**🛏️ Bed Type Availability**"
                 )
+
 
                 cols = st.columns(3)
 
@@ -421,27 +588,30 @@ st.metric(
 
                     with cols[i % 3]:
 
-                        available = int(
+                        bed_available = int(
                             row["available_beds"]
                         )
 
-                        total = int(
+                        bed_total = int(
                             row["total_beds"]
                         )
 
+
                         st.metric(
-                            row["bed_type"],
-                            f"{available} / {total}"
+                            str(
+                                row["bed_type"]
+                            ),
+                            f"{bed_available} / {bed_total}"
                         )
 
 
-                        if available == 0:
+                        if bed_available == 0:
 
                             st.error(
                                 "🔴 No Bed"
                             )
 
-                        elif available <= 2:
+                        elif bed_available <= 2:
 
                             st.warning(
                                 "🟡 Low"
@@ -462,7 +632,12 @@ st.metric(
 
 st.divider()
 
+
+# =========================
+# FOOTER
+# =========================
+
 st.caption(
     "⚠️ Bed availability shown in this prototype "
     "is based on registered/demo hospital data."
-)
+        )
