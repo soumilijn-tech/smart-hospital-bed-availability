@@ -284,7 +284,29 @@ def get_hospital_data():
     )
 
     return df
+def get_available_beds_by_name(hospital_name):
+    conn = sqlite3.connect(DB_PATH)
 
+    query = """
+    SELECT COALESCE(SUM(b.available_beds), 0) AS available_beds
+    FROM hospitals h
+    LEFT JOIN beds b
+        ON h.hospital_id = b.hospital_id
+    WHERE LOWER(h.name) = LOWER(?)
+    """
+
+    result = pd.read_sql_query(
+        query,
+        conn,
+        params=(hospital_name,)
+    )
+
+    conn.close()
+
+    if result.empty:
+        return 0
+
+    return int(result.iloc[0]["available_beds"])
 
 def get_bed_details(hospital_id):
 
@@ -339,7 +361,14 @@ else:
             st.markdown(
                 f"### 🏥 {hospital['name']}"
             )
+available_beds = get_available_beds_by_name(
+    hospital["name"]
+)
 
+st.metric(
+    "🛏️ Available Beds",
+    available_beds
+)
             col1, col2, col3 = st.columns(3)
 
             with col1:
