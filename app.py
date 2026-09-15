@@ -3,7 +3,6 @@ import sqlite3
 import pandas as pd
 
 from pathlib import Path
-from streamlit_autorefresh import st_autorefresh
 
 from services.hospitals import (
     geocode_location,
@@ -30,16 +29,6 @@ st.set_page_config(
 
 
 # =========================
-# AUTOMATIC REFRESH
-# =========================
-
-st_autorefresh(
-    interval=30 * 1000,
-    key="bed_availability_refresh"
-)
-
-
-# =========================
 # HEADER
 # =========================
 
@@ -47,10 +36,6 @@ st.title("🏥 Smart Hospital Bed Availability System")
 
 st.write(
     "Find nearby hospitals and check current bed availability."
-)
-
-st.info(
-    "🔄 Bed availability automatically refreshes every 30 seconds."
 )
 
 
@@ -61,28 +46,43 @@ st.info(
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    if st.button("👤 Patient Login", use_container_width=True):
+    if st.button(
+        "👤 Patient Login",
+        use_container_width=True
+    ):
         st.switch_page("pages/patient_login.py")
 
+
 with col2:
-    if st.button("📝 Patient Registration", use_container_width=True):
+    if st.button(
+        "📝 Patient Registration",
+        use_container_width=True
+    ):
         st.switch_page("pages/patient_register.py")
 
+
 with col3:
-    if st.button("🔐 Admin Login", use_container_width=True):
+    if st.button(
+        "🔐 Admin Login",
+        use_container_width=True
+    ):
         st.switch_page("pages/admin_login.py")
 
+
 with col4:
-    if st.button("🏥 Patient Dashboard", use_container_width=True):
+    if st.button(
+        "🏥 Patient Dashboard",
+        use_container_width=True
+    ):
         st.switch_page("pages/patient_dashboard.py")
 
 
 st.divider()
 
 
-# =========================
+# =========================================================
 # NEARBY HOSPITAL SEARCH
-# =========================
+# =========================================================
 
 st.subheader("📍 Find Nearby Hospitals")
 
@@ -112,9 +112,9 @@ if st.button(
 
     else:
 
-        # -------------------------
+        # =========================
         # GEOCODING
-        # -------------------------
+        # =========================
 
         with st.spinner(
             "📍 Finding your location..."
@@ -148,9 +148,9 @@ if st.button(
             lon = coordinates["lon"]
 
 
-            # -------------------------
+            # =========================
             # HOSPITAL SEARCH
-            # -------------------------
+            # =========================
 
             with st.spinner(
                 "🏥 Searching nearby hospitals..."
@@ -274,14 +274,9 @@ if st.button(
 st.divider()
 
 
-# =========================
-# REGISTERED HOSPITAL BED DATA
-# =========================
-
-st.subheader(
-    "🛏️ Registered Hospital Bed Availability"
-)
-
+# =========================================================
+# DATABASE FUNCTIONS
+# =========================================================
 
 def get_hospital_data():
 
@@ -353,10 +348,6 @@ def get_hospital_data():
     return df
 
 
-# =========================
-# BED DETAILS
-# =========================
-
 def get_bed_details(hospital_id):
 
     conn = sqlite3.connect(DB_PATH)
@@ -386,38 +377,55 @@ def get_bed_details(hospital_id):
     return df
 
 
-# =========================
-# LOAD DATABASE
-# =========================
+# =========================================================
+# LIVE BED AVAILABILITY SECTION
+# =========================================================
 
-try:
+@st.fragment(run_every="30s")
+def live_bed_availability():
 
-    df = get_hospital_data()
-
-except Exception:
-
-    st.error(
-        "❌ Unable to load hospital bed data."
+    st.subheader(
+        "🛏️ Registered Hospital Bed Availability"
     )
 
-    st.stop()
-
-
-# =========================
-# DISPLAY HOSPITALS
-# =========================
-
-if df.empty:
-
-    st.info(
-        "No registered hospitals available."
+    st.caption(
+        "🔄 Bed availability updates automatically every 30 seconds."
     )
 
-else:
 
-    # -------------------------
+    # =========================
+    # LOAD DATABASE
+    # =========================
+
+    try:
+
+        df = get_hospital_data()
+
+    except Exception as e:
+
+        st.error(
+            "❌ Unable to load hospital bed data."
+        )
+
+        return
+
+
+    # =========================
+    # NO HOSPITAL
+    # =========================
+
+    if df.empty:
+
+        st.info(
+            "No registered hospitals available."
+        )
+
+        return
+
+
+    # =========================
     # SUMMARY
-    # -------------------------
+    # =========================
 
     total_beds = int(
         df["total_beds"].sum()
@@ -467,9 +475,9 @@ else:
     st.divider()
 
 
-    # -------------------------
+    # =========================
     # HOSPITAL CARDS
-    # -------------------------
+    # =========================
 
     for _, hospital in df.iterrows():
 
@@ -485,6 +493,10 @@ else:
             col1, col2, col3 = st.columns(3)
 
 
+            # =========================
+            # TOTAL BEDS
+            # =========================
+
             with col1:
 
                 st.metric(
@@ -494,6 +506,10 @@ else:
                     )
                 )
 
+
+            # =========================
+            # AVAILABLE BEDS
+            # =========================
 
             with col2:
 
@@ -507,6 +523,10 @@ else:
                 )
 
 
+            # =========================
+            # OCCUPIED BEDS
+            # =========================
+
             with col3:
 
                 st.metric(
@@ -517,9 +537,9 @@ else:
                 )
 
 
-            # -------------------------
+            # =========================
             # BED STATUS
-            # -------------------------
+            # =========================
 
             if available == 0:
 
@@ -540,9 +560,9 @@ else:
                 )
 
 
-            # -------------------------
+            # =========================
             # HOSPITAL INFORMATION
-            # -------------------------
+            # =========================
 
             col1, col2 = st.columns(2)
 
@@ -562,10 +582,14 @@ else:
 
             with col2:
 
-                if pd.notna(
-                    hospital["latitude"]
-                ) and pd.notna(
-                    hospital["longitude"]
+                if (
+                    pd.notna(
+                        hospital["latitude"]
+                    )
+                    and
+                    pd.notna(
+                        hospital["longitude"]
+                    )
                 ):
 
                     directions_url = (
@@ -580,9 +604,9 @@ else:
                     )
 
 
-            # -------------------------
+            # =========================
             # BED TYPE DETAILS
-            # -------------------------
+            # =========================
 
             bed_df = get_bed_details(
                 int(
@@ -647,14 +671,20 @@ else:
                         )
 
 
-st.divider()
+# =========================================================
+# RUN LIVE BED SECTION
+# =========================================================
+
+live_bed_availability()
 
 
-# =========================
+# =========================================================
 # FOOTER
-# =========================
+# =========================================================
+
+st.divider()
 
 st.caption(
     "⚠️ Bed availability shown in this prototype "
     "is based on registered/demo hospital data."
-                )
+)
