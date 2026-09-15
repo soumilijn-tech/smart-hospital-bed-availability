@@ -3,7 +3,9 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 
-DB_PATH = "/content/smart_hospital/database/hospital.db"
+from pathlib import Path
+
+DB_PATH = Path(__file__).resolve().parent.parent / "database" / "hospital.db"
 
 st.set_page_config(
     page_title="Hospital Analytics",
