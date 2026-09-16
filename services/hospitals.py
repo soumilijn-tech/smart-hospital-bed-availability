@@ -4,49 +4,34 @@ from functools import lru_cache
 
 
 # =========================================================
-# API URLS
+# API CONFIGURATION
 # =========================================================
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 
-OVERPASS_URLS = [
+OVERPASS_SERVERS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter"
+    "https://overpass.private.coffee/api/interpreter",
 ]
 
-
 HEADERS = {
-    "User-Agent": (
-        "SmartHospitalBedAvailability/1.0 "
-        "(educational project)"
-    )
+    "User-Agent": "SmartHospitalBedAvailability/1.0"
 }
 
 
 # =========================================================
-# DISTANCE
+# DISTANCE CALCULATION
 # =========================================================
 
-def calculate_distance(
-    lat1,
-    lon1,
-    lat2,
-    lon2
-):
-    """
-    Calculate distance between two coordinates
-    using Haversine formula.
-
-    Returns distance in KM.
-    """
+def calculate_distance(lat1, lon1, lat2, lon2):
 
     R = 6371.0
 
     lat1 = math.radians(float(lat1))
-    lon1 = math.radians(float(lon1))
-
     lat2 = math.radians(float(lat2))
+
+    lon1 = math.radians(float(lon1))
     lon2 = math.radians(float(lon2))
 
     dlat = lat2 - lat1
@@ -58,11 +43,6 @@ def calculate_distance(
         math.cos(lat1)
         * math.cos(lat2)
         * math.sin(dlon / 2) ** 2
-    )
-
-    a = min(
-        1.0,
-        max(0.0, a)
     )
 
     c = 2 * math.atan2(
@@ -78,9 +58,6 @@ def calculate_distance(
 # =========================================================
 
 def geocode_location(location):
-    """
-    Convert location name into latitude/longitude.
-    """
 
     location = location.strip()
 
@@ -88,188 +65,259 @@ def geocode_location(location):
         return None
 
     queries = [
-        f"{location}, West Bengal, India",
+        location,
         f"{location}, India",
-        location
+        f"{location}, West Bengal, India"
     ]
 
-    for query_text in queries:
+    for query in queries:
+
+        params = {
+            "q": query,
+            "format": "json",
+            "limit": 1,
+            "addressdetails": 1
+        }
 
         try:
 
             response = requests.get(
                 NOMINATIM_URL,
-                params={
-                    "q": query_text,
-                    "format": "json",
-                    "limit": 5,
-                    "addressdetails": 1
-                },
+                params=params,
                 headers=HEADERS,
                 timeout=20
             )
 
             response.raise_for_status()
 
-            results = response.json()
+            data = response.json()
 
-            if not results:
-                continue
+            if data:
 
-            # Prefer city/town/locality results
-            preferred = []
+                result = data[0]
 
-            for result in results:
+                return {
+                    "lat": float(result["lat"]),
+                    "lon": float(result["lon"])
+                }
 
-                result_type = str(
-                    result.get("type", "")
-                ).lower()
-
-                result_class = str(
-                    result.get("class", "")
-                ).lower()
-
-                if result_type in [
-                    "city",
-                    "town",
-                    "village",
-                    "municipality",
-                    "suburb",
-                    "county",
-                    "administrative"
-                ]:
-
-                    preferred.append(result)
-
-                elif result_class in [
-                    "place",
-                    "boundary"
-                ]:
-
-                    preferred.append(result)
-
-            candidates = (
-                preferred
-                if preferred
-                else results
-            )
-
-            for result in candidates:
-
-                try:
-
-                    return {
-                        "lat": float(
-                            result["lat"]
-                        ),
-                        "lon": float(
-                            result["lon"]
-                        )
-                    }
-
-                except (
-                    KeyError,
-                    ValueError,
-                    TypeError
-                ):
-                    continue
-
-        except (
-            requests.RequestException,
-            ValueError
-        ):
+        except Exception:
             continue
 
     return None
 
 
 # =========================================================
-# OVERPASS SEARCH
+# OVERPASS HOSPITAL SEARCH
 # =========================================================
 
-def _overpass_search(
-    lat,
-    lon,
-    radius
-):
-    """
-    Search hospitals using Overpass API.
-    """
+def _overpass_search(lat, lon, radius):
 
     query = f"""
-    [out:json][timeout:60];
+    [out:json][timeout:90];
 
     (
-        nwr["amenity"="hospital"]
-        (around:{radius},{lat},{lon});
-
-        nwr["healthcare"="hospital"]
-        (around:{radius},{lat},{lon});
+        nwr["amenity"="hospital"](around:{int(radius)},{lat},{lon});
+        nwr["healthcare"="hospital"](around:{int(radius)},{lat},{lon});
     );
 
     out center tags;
     """
 
-    for url in OVERPASS_URLS:
-
-        # -------------------------
-        # Try POST
-        # -------------------------
+    for server in OVERPASS_SERVERS:
 
         try:
 
             response = requests.post(
-                url,
+                server,
                 data=query,
                 headers=HEADERS,
-                timeout=75
+                timeout=100
             )
 
             response.raise_for_status()
 
             data = response.json()
 
-            if data.get("elements") is not None:
-
-                return data.get(
-                    "elements",
-                    []
-                )
-
-        except Exception:
-            pass
-
-
-        # -------------------------
-        # Try GET
-        # -------------------------
-
-        try:
-
-            response = requests.get(
-                url,
-                params={
-                    "data": query
-                },
-                headers=HEADERS,
-                timeout=75
+            elements = data.get(
+                "elements",
+                []
             )
 
-            response.raise_for_status()
+            if elements:
 
-            data = response.json()
-
-            if data.get("elements") is not None:
-
-                return data.get(
-                    "elements",
-                    []
-                )
+                return elements
 
         except Exception:
-            pass
+
+            continue
 
     return []
+
+
+# =========================================================
+# CREATE HOSPITAL RESULT
+# =========================================================
+
+def _build_hospital_list(
+    elements,
+    lat,
+    lon,
+    radius
+):
+
+    hospitals = []
+
+    seen = set()
+
+    for element in elements:
+
+        tags = element.get(
+            "tags",
+            {}
+        )
+
+        name = (
+            tags.get("name")
+            or tags.get("official_name")
+            or tags.get("short_name")
+        )
+
+        if not name:
+            continue
+
+
+        # =================================================
+        # GET COORDINATES
+        # =================================================
+
+        hospital_lat = None
+        hospital_lon = None
+
+        if (
+            "lat" in element
+            and
+            "lon" in element
+        ):
+
+            hospital_lat = element["lat"]
+            hospital_lon = element["lon"]
+
+        elif "center" in element:
+
+            center = element["center"]
+
+            hospital_lat = center.get("lat")
+            hospital_lon = center.get("lon")
+
+
+        if (
+            hospital_lat is None
+            or
+            hospital_lon is None
+        ):
+
+            continue
+
+
+        hospital_lat = float(
+            hospital_lat
+        )
+
+        hospital_lon = float(
+            hospital_lon
+        )
+
+
+        # =================================================
+        # DISTANCE
+        # =================================================
+
+        distance = calculate_distance(
+            lat,
+            lon,
+            hospital_lat,
+            hospital_lon
+        )
+
+
+        # =================================================
+        # RADIUS FILTER
+        # =================================================
+
+        if distance > (
+            float(radius) / 1000
+        ):
+
+            continue
+
+
+        # =================================================
+        # DUPLICATE CHECK
+        # =================================================
+
+        unique_key = (
+            name.strip().lower(),
+            round(hospital_lat, 4),
+            round(hospital_lon, 4)
+        )
+
+        if unique_key in seen:
+            continue
+
+        seen.add(unique_key)
+
+
+        # =================================================
+        # ADDRESS
+        # =================================================
+
+        address = (
+            tags.get("addr:full")
+            or tags.get("addr:street")
+            or tags.get("addr:place")
+            or tags.get("addr:suburb")
+            or tags.get("addr:city")
+            or "Address not available"
+        )
+
+
+        # =================================================
+        # PHONE
+        # =================================================
+
+        phone = (
+            tags.get("phone")
+            or tags.get("contact:phone")
+            or "Not available"
+        )
+
+
+        hospitals.append({
+
+            "name": name.strip(),
+
+            "address": address,
+
+            "phone": phone,
+
+            "latitude": hospital_lat,
+
+            "longitude": hospital_lon,
+
+            "distance": round(
+                distance,
+                2
+            )
+
+        })
+
+
+    hospitals.sort(
+        key=lambda x: x["distance"]
+    )
+
+    return hospitals
 
 
 # =========================================================
@@ -282,49 +330,53 @@ def _nominatim_hospital_search(
     lon,
     radius
 ):
-    """
-    Fallback hospital search using Nominatim.
 
-    This is used if Overpass returns no results.
-    """
+    if not location:
+        return []
 
-    radius_km = radius / 1000
 
-    search_queries = [
-        f"hospital, {location}, West Bengal, India",
-        f"hospital, {location}, India",
-        f"hospitals near {location}, West Bengal, India"
+    queries = [
+        f"hospital near {location}",
+        f"hospitals in {location}",
+        f"hospital {location}"
     ]
+
 
     hospitals = []
 
     seen = set()
 
-    for search_query in search_queries:
+
+    for query in queries:
+
+        params = {
+            "q": query,
+            "format": "json",
+            "limit": 50,
+            "addressdetails": 1
+        }
+
 
         try:
 
             response = requests.get(
                 NOMINATIM_URL,
-                params={
-                    "q": search_query,
-                    "format": "json",
-                    "limit": 50,
-                    "addressdetails": 1
-                },
+                params=params,
                 headers=HEADERS,
-                timeout=25
+                timeout=30
             )
 
             response.raise_for_status()
 
-            results = response.json()
+            data = response.json()
+
 
         except Exception:
+
             continue
 
 
-        for result in results:
+        for result in data:
 
             try:
 
@@ -337,10 +389,11 @@ def _nominatim_hospital_search(
                 )
 
             except (
-                KeyError,
                 ValueError,
+                KeyError,
                 TypeError
             ):
+
                 continue
 
 
@@ -352,106 +405,64 @@ def _nominatim_hospital_search(
             )
 
 
-            if distance > radius_km:
+            if distance > (
+                float(radius) / 1000
+            ):
+
                 continue
 
 
-            # -------------------------
-            # Name
-            # -------------------------
-
             name = (
-                result.get("name")
-                or
                 result.get("display_name")
-                or
-                "Hospital"
+                or result.get("name")
+                or "Hospital"
             )
 
-            name = str(name).strip()
 
+            address = (
+                result.get("display_name")
+                or "Address not available"
+            )
 
-            # -------------------------
-            # Duplicate
-            # -------------------------
 
             unique_key = (
                 name.lower(),
-                round(
-                    hospital_lat,
-                    4
-                ),
-                round(
-                    hospital_lon,
-                    4
-                )
+                round(hospital_lat, 4),
+                round(hospital_lon, 4)
             )
+
 
             if unique_key in seen:
                 continue
 
+
             seen.add(unique_key)
 
 
-            # -------------------------
-            # Address
-            # -------------------------
+            hospitals.append({
 
-            address_data = result.get(
-                "address",
-                {}
-            )
+                "name": name,
 
-            address_parts = []
+                "address": address,
 
-            for key in [
-                "road",
-                "neighbourhood",
-                "suburb",
-                "city",
-                "town",
-                "state"
-            ]:
+                "phone": "Not available",
 
-                value = address_data.get(
-                    key
+                "latitude": hospital_lat,
+
+                "longitude": hospital_lon,
+
+                "distance": round(
+                    distance,
+                    2
                 )
 
-                if value:
-                    address_parts.append(
-                        str(value)
-                    )
-
-            if address_parts:
-
-                address = ", ".join(
-                    address_parts
-                )
-
-            else:
-
-                address = (
-                    result.get(
-                        "display_name"
-                    )
-                    or
-                    "Address not available"
-                )
+            })
 
 
-            hospitals.append(
-                {
-                    "name": name,
-                    "address": address,
-                    "phone": "Not available",
-                    "latitude": hospital_lat,
-                    "longitude": hospital_lon,
-                    "distance": round(
-                        distance,
-                        2
-                    )
-                }
-            )
+    hospitals.sort(
+        key=lambda x: x["distance"]
+    )
+
 
     return hospitals
 
@@ -464,43 +475,17 @@ def find_nearby_hospitals(
     lat,
     lon,
     radius=20000,
-    location=""
+    location=None
 ):
-    """
-    Main nearby hospital search.
 
-    1. Try Overpass.
-    2. If no result, use Nominatim fallback.
-    """
-
-    try:
-
-        lat = float(lat)
-        lon = float(lon)
-        radius = int(radius)
-
-    except (
-        ValueError,
-        TypeError
-    ):
-
-        return []
+    lat = float(lat)
+    lon = float(lon)
+    radius = float(radius)
 
 
-    if radius <= 0:
-        return []
-
-
-    # Maximum 50 KM
-    radius = min(
-        radius,
-        50000
-    )
-
-
-    # =====================================================
-    # STEP 1 — OVERPASS
-    # =====================================================
+    # =================================================
+    # FIRST: OVERPASS
+    # =================================================
 
     elements = _overpass_search(
         lat,
@@ -509,215 +494,25 @@ def find_nearby_hospitals(
     )
 
 
-    hospitals = []
+    if elements:
 
-    seen = set()
-
-
-    for element in elements:
-
-        tags = element.get(
-            "tags",
-            {}
-        )
-
-
-        # -------------------------
-        # Name
-        # -------------------------
-
-        name = (
-            tags.get("name")
-            or
-            tags.get("official_name")
-            or
-            tags.get("short_name")
-            or
-            "Unnamed Hospital"
-        )
-
-        name = str(name).strip()
-
-
-        # -------------------------
-        # Coordinates
-        # -------------------------
-
-        hospital_lat = None
-        hospital_lon = None
-
-
-        if (
-            element.get("lat") is not None
-            and
-            element.get("lon") is not None
-        ):
-
-            hospital_lat = element.get(
-                "lat"
-            )
-
-            hospital_lon = element.get(
-                "lon"
-            )
-
-        elif element.get("center"):
-
-            center = element.get(
-                "center",
-                {}
-            )
-
-            hospital_lat = center.get(
-                "lat"
-            )
-
-            hospital_lon = center.get(
-                "lon"
-            )
-
-
-        if (
-            hospital_lat is None
-            or
-            hospital_lon is None
-        ):
-            continue
-
-
-        try:
-
-            hospital_lat = float(
-                hospital_lat
-            )
-
-            hospital_lon = float(
-                hospital_lon
-            )
-
-        except (
-            ValueError,
-            TypeError
-        ):
-
-            continue
-
-
-        # -------------------------
-        # Distance
-        # -------------------------
-
-        distance = calculate_distance(
+        hospitals = _build_hospital_list(
+            elements,
             lat,
             lon,
-            hospital_lat,
-            hospital_lon
+            radius
         )
 
+        if hospitals:
 
-        if distance > radius / 1000:
-            continue
-
-
-        # -------------------------
-        # Duplicate
-        # -------------------------
-
-        unique_key = (
-            name.lower(),
-            round(
-                hospital_lat,
-                4
-            ),
-            round(
-                hospital_lon,
-                4
-            )
-        )
+            return hospitals
 
 
-        if unique_key in seen:
-            continue
+    # =================================================
+    # SECOND: NOMINATIM FALLBACK
+    # =================================================
 
-        seen.add(
-            unique_key
-        )
-
-
-        # -------------------------
-        # Address
-        # -------------------------
-
-        address_parts = []
-
-        for key in [
-            "addr:housenumber",
-            "addr:street",
-            "addr:place",
-            "addr:suburb",
-            "addr:city"
-        ]:
-
-            value = tags.get(key)
-
-            if value:
-                address_parts.append(
-                    str(value)
-                )
-
-
-        if address_parts:
-
-            address = ", ".join(
-                address_parts
-            )
-
-        else:
-
-            address = (
-                tags.get("addr:full")
-                or
-                tags.get("description")
-                or
-                "Address not available"
-            )
-
-
-        # -------------------------
-        # Phone
-        # -------------------------
-
-        phone = (
-            tags.get("phone")
-            or
-            tags.get("contact:phone")
-            or
-            tags.get("contact:mobile")
-            or
-            "Not available"
-        )
-
-
-        hospitals.append(
-            {
-                "name": name,
-                "address": address,
-                "phone": phone,
-                "latitude": hospital_lat,
-                "longitude": hospital_lon,
-                "distance": round(
-                    distance,
-                    2
-                )
-            }
-        )
-
-
-    # =====================================================
-    # STEP 2 — FALLBACK
-    # =====================================================
-
-    if not hospitals and location:
+    if location:
 
         hospitals = _nominatim_hospital_search(
             location,
@@ -726,21 +521,16 @@ def find_nearby_hospitals(
             radius
         )
 
+        if hospitals:
 
-    # =====================================================
-    # SORT
-    # =====================================================
-
-    hospitals.sort(
-        key=lambda x: x["distance"]
-    )
+            return hospitals
 
 
-    return hospitals
+    return []
 
 
 # =========================================================
-# CACHED SEARCH
+# CACHED HOSPITAL SEARCH
 # =========================================================
 
 @lru_cache(maxsize=100)
@@ -748,11 +538,8 @@ def cached_hospital_search(
     lat,
     lon,
     radius,
-    location=""
+    location=None
 ):
-    """
-    Cached nearby hospital search.
-    """
 
     return find_nearby_hospitals(
         lat,
