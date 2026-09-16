@@ -1,5 +1,6 @@
 import streamlit as st
 import sqlite3
+import bcrypt
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "database" / "hospital.db"
@@ -21,11 +22,9 @@ confirm_password = st.text_input("🔐 Confirm Password", type="password")
 
 if st.button("Register", type="primary"):
 
-    # Clean user input
     name_clean = name.strip()
     email_clean = email.strip().lower()
 
-    # Validation
     if not name_clean or not email_clean or not password or not confirm_password:
         st.warning("⚠️ Please fill all fields.")
 
@@ -41,7 +40,6 @@ if st.button("Register", type="primary"):
         try:
             conn = sqlite3.connect(DB_PATH)
 
-            # Check whether email already exists
             existing_user = conn.execute("""
                 SELECT user_id
                 FROM users
@@ -52,11 +50,17 @@ if st.button("Register", type="primary"):
                 st.error("❌ This email is already registered.")
 
             else:
+                # Hash password securely
+                password_hash = bcrypt.hashpw(
+                    password.encode("utf-8"),
+                    bcrypt.gensalt()
+                ).decode("utf-8")
+
                 conn.execute("""
                     INSERT INTO users
                     (name, email, password, role)
                     VALUES (?, ?, ?, 'PATIENT')
-                """, (name_clean, email_clean, password))
+                """, (name_clean, email_clean, password_hash))
 
                 conn.commit()
 
