@@ -176,10 +176,29 @@ if st.button(
 
             if not hospitals:
 
-                st.warning(
-                    "⚠️ No hospitals found "
-                    "within this radius."
-                )
+    st.error(
+        "❌ Hospital search returned 0 results."
+    )
+
+    st.info(
+        f"📍 Resolved location: "
+        f"{lat}, {lon}"
+    )
+
+    st.info(
+        f"📏 Search radius: {radius} KM"
+    )
+
+    st.warning(
+        "The location was found, but the "
+        "hospital data service returned no hospitals."
+    )
+
+else:
+
+    st.success(
+        f"🏥 {len(hospitals)} hospital(s) found!"
+    )
 
             else:
 
