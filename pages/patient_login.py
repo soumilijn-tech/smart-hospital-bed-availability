@@ -1,7 +1,5 @@
-
 import streamlit as st
 import sqlite3
-
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "database" / "hospital.db"
@@ -21,31 +19,48 @@ password = st.text_input("🔑 Password", type="password")
 
 if st.button("Login", type="primary"):
 
-    if not email or not password:
+    # Clean input
+    email_clean = email.strip().lower()
+
+    if not email_clean or not password:
         st.warning("⚠️ Please enter email and password.")
 
     else:
-        conn = sqlite3.connect(DB_PATH)
+        conn = None
 
-        user = conn.execute("""
-            SELECT user_id, name, email, role
-            FROM users
-            WHERE email = ?
-            AND password = ?
-            AND role = 'PATIENT'
-        """, (email, password)).fetchone()
+        try:
+            conn = sqlite3.connect(DB_PATH)
 
-        conn.close()
+            user = conn.execute("""
+                SELECT user_id, name, email, role
+                FROM users
+                WHERE LOWER(TRIM(email)) = ?
+                AND password = ?
+                AND role = 'PATIENT'
+            """, (email_clean, password)).fetchone()
 
-        if user:
-            st.session_state["patient_logged_in"] = True
-            st.session_state["patient_id"] = user[0]
-            st.session_state["patient_name"] = user[1]
+            if user:
 
-            st.success(f"✅ Welcome, {user[1]}!")
+                # Save login session
+                st.session_state["patient_logged_in"] = True
+                st.session_state["patient_id"] = user[0]
+                st.session_state["patient_name"] = user[1]
+                st.session_state["patient_email"] = user[2]
 
-        else:
-            st.error("❌ Invalid email or password.")
+                st.success(f"✅ Welcome, {user[1]}!")
+
+                # Go directly to dashboard
+                st.switch_page("pages/patient_dashboard.py")
+
+            else:
+                st.error("❌ Invalid email or password.")
+
+        except sqlite3.Error as e:
+            st.error(f"❌ Database error: {e}")
+
+        finally:
+            if conn:
+                conn.close()
 
 st.divider()
 
