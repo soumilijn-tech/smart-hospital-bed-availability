@@ -1,11 +1,23 @@
-
 import streamlit as st
 import sqlite3
 from datetime import datetime
-
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "database" / "hospital.db"
+
+# =========================================================
+# DATABASE PATH
+# =========================================================
+
+DB_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "database"
+    / "hospital.db"
+)
+
+
+# =========================================================
+# PAGE CONFIG
+# =========================================================
 
 st.set_page_config(
     page_title="Bed Management",
@@ -13,21 +25,37 @@ st.set_page_config(
     layout="wide"
 )
 
-# =========================
-# LOGIN CHECK
-# =========================
 
-if not st.session_state.get("admin_logged_in", False):
+# =========================================================
+# ADMIN LOGIN CHECK
+# =========================================================
 
-    st.warning("🔐 Please login as Admin first.")
+if not st.session_state.get(
+    "admin_logged_in",
+    False
+):
 
-    if st.button("Go to Admin Login"):
-        st.switch_page("pages/admin_login.py")
+    st.warning(
+        "🔐 Please login as Admin first."
+    )
+
+    if st.button(
+        "Go to Admin Login"
+    ):
+
+        st.switch_page(
+            "pages/admin_login.py"
+        )
 
     st.stop()
 
 
+# =========================================================
+# HEADER
+# =========================================================
+
 st.title("🛏️ Bed Management")
+
 st.write(
     f"Admin: **{st.session_state.get('admin_name', 'Admin')}**"
 )
@@ -35,24 +63,31 @@ st.write(
 st.divider()
 
 
-# =========================
+# =========================================================
 # SELECT HOSPITAL
-# =========================
+# =========================================================
 
 conn = sqlite3.connect(DB_PATH)
 
-hospitals = conn.execute("""
-    SELECT hospital_id, name
+hospitals = conn.execute(
+    """
+    SELECT
+        hospital_id,
+        name
     FROM hospitals
     ORDER BY name
-""").fetchall()
+    """
+).fetchall()
 
 conn.close()
 
 
 if not hospitals:
 
-    st.error("❌ No hospitals found.")
+    st.error(
+        "❌ No hospitals found."
+    )
+
     st.stop()
 
 
@@ -61,21 +96,26 @@ hospital_dict = {
     for hospital_id, name in hospitals
 }
 
+
 selected_hospital = st.selectbox(
     "🏥 Select Hospital",
     list(hospital_dict.keys())
 )
 
-hospital_id = hospital_dict[selected_hospital]
+
+hospital_id = hospital_dict[
+    selected_hospital
+]
 
 
-# =========================
-# ADD / UPDATE BED DATA
-# =========================
+# =========================================================
+# BED CONFIGURATION
+# =========================================================
 
 st.subheader(
     f"🛏️ Bed Configuration — {selected_hospital}"
 )
+
 
 bed_type = st.selectbox(
     "Bed Type",
@@ -87,25 +127,39 @@ bed_type = st.selectbox(
 )
 
 
+# =========================================================
+# GET EXISTING BED DATA
+# =========================================================
+
 conn = sqlite3.connect(DB_PATH)
 
-existing = conn.execute("""
-    SELECT total_beds, available_beds
+existing = conn.execute(
+    """
+    SELECT
+        total_beds,
+        available_beds
     FROM beds
     WHERE hospital_id = ?
     AND bed_type = ?
-""", (
-    hospital_id,
-    bed_type
-)).fetchone()
+    """,
+    (
+        hospital_id,
+        bed_type
+    )
+).fetchone()
 
 conn.close()
 
 
 if existing:
 
-    current_total = int(existing[0])
-    current_available = int(existing[1])
+    current_total = int(
+        existing[0]
+    )
+
+    current_available = int(
+        existing[1]
+    )
 
 else:
 
@@ -113,7 +167,12 @@ else:
     current_available = 0
 
 
+# =========================================================
+# BED INPUT
+# =========================================================
+
 col1, col2 = st.columns(2)
+
 
 with col1:
 
@@ -123,6 +182,7 @@ with col1:
         value=current_total,
         step=1
     )
+
 
 with col2:
 
@@ -138,6 +198,10 @@ with col2:
     )
 
 
+# =========================================================
+# SAVE BED DATA
+# =========================================================
+
 if st.button(
     "💾 Save Bed Data",
     type="primary"
@@ -147,67 +211,177 @@ if st.button(
         "%Y-%m-%d %H:%M:%S"
     )
 
-    conn = sqlite3.connect(DB_PATH)
 
-    if existing:
+    conn = sqlite3.connect(
+        DB_PATH
+    )
 
-        conn.execute("""
-            UPDATE beds
-            SET total_beds = ?,
-                available_beds = ?,
-                last_updated = ?
-            WHERE hospital_id = ?
-            AND bed_type = ?
-        """, (
-            total_beds,
-            available_beds,
-            now,
-            hospital_id,
-            bed_type
-        ))
 
-    else:
+    try:
 
-        conn.execute("""
-            INSERT INTO beds
+        # =====================================================
+        # CREATE HISTORY TABLE IF NEEDED
+        # =====================================================
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bed_updates (
+
+                update_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                hospital_id INTEGER NOT NULL,
+
+                bed_type TEXT NOT NULL,
+
+                old_available INTEGER NOT NULL,
+
+                new_available INTEGER NOT NULL,
+
+                updated_at TEXT NOT NULL
+
+            )
+            """
+        )
+
+
+        # =====================================================
+        # SAVE OLD VALUE
+        # =====================================================
+
+        old_available = current_available
+
+
+        # =====================================================
+        # UPDATE EXISTING BED
+        # =====================================================
+
+        if existing:
+
+            conn.execute(
+                """
+                UPDATE beds
+                SET
+                    total_beds = ?,
+                    available_beds = ?,
+                    last_updated = ?
+                WHERE hospital_id = ?
+                AND bed_type = ?
+                """,
+                (
+                    int(total_beds),
+                    int(available_beds),
+                    now,
+                    hospital_id,
+                    bed_type
+                )
+            )
+
+
+        # =====================================================
+        # INSERT NEW BED
+        # =====================================================
+
+        else:
+
+            conn.execute(
+                """
+                INSERT INTO beds
+                (
+                    hospital_id,
+                    bed_type,
+                    total_beds,
+                    available_beds,
+                    last_updated
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    hospital_id,
+                    bed_type,
+                    int(total_beds),
+                    int(available_beds),
+                    now
+                )
+            )
+
+
+        # =====================================================
+        # SAVE UPDATE HISTORY
+        # =====================================================
+
+        conn.execute(
+            """
+            INSERT INTO bed_updates
             (
                 hospital_id,
                 bed_type,
-                total_beds,
-                available_beds,
-                last_updated
+                old_available,
+                new_available,
+                updated_at
             )
             VALUES (?, ?, ?, ?, ?)
-        """, (
-            hospital_id,
-            bed_type,
-            total_beds,
-            available_beds,
-            now
-        ))
+            """,
+            (
+                hospital_id,
+                bed_type,
+                int(old_available),
+                int(available_beds),
+                now
+            )
+        )
 
-    conn.commit()
-    conn.close()
 
-    st.success(
-        f"✅ {bed_type} bed data saved successfully!"
-    )
+        # =====================================================
+        # COMMIT
+        # =====================================================
+
+        conn.commit()
+
+
+        st.success(
+            f"✅ {bed_type} bed data saved successfully!"
+        )
+
+        st.info(
+            f"🕐 Update History saved: "
+            f"{old_available} → {available_beds}"
+        )
+
+
+    except sqlite3.Error as e:
+
+        conn.rollback()
+
+        st.error(
+            f"❌ Database error: {e}"
+        )
+
+
+    finally:
+
+        conn.close()
+
 
     st.rerun()
 
 
+# =========================================================
+# CURRENT BED STATUS
+# =========================================================
+
 st.divider()
 
+st.subheader(
+    "📊 Current Bed Status"
+)
 
-# =========================
-# CURRENT BED STATUS
-# =========================
 
-st.subheader("📊 Current Bed Status")
+conn = sqlite3.connect(
+    DB_PATH
+)
 
-conn = sqlite3.connect(DB_PATH)
-
-beds = conn.execute("""
+beds = conn.execute(
+    """
     SELECT
         bed_type,
         total_beds,
@@ -216,7 +390,9 @@ beds = conn.execute("""
     FROM beds
     WHERE hospital_id = ?
     ORDER BY bed_type
-""", (hospital_id,)).fetchall()
+    """,
+    (hospital_id,)
+).fetchall()
 
 conn.close()
 
@@ -231,41 +407,63 @@ else:
 
     cols = st.columns(3)
 
+
     for i, bed in enumerate(beds):
 
         with cols[i % 3]:
 
             bed_type_name = bed[0]
-            total = int(bed[1])
-            available = int(bed[2])
+
+            total = int(
+                bed[1]
+            )
+
+            available = int(
+                bed[2]
+            )
+
 
             st.metric(
                 bed_type_name,
                 f"{available} / {total}"
             )
 
+
             if available == 0:
 
-                st.error("🔴 No Beds")
+                st.error(
+                    "🔴 No Beds"
+                )
 
             elif available <= 2:
 
-                st.warning("🟡 Low")
+                st.warning(
+                    "🟡 Low"
+                )
 
             else:
 
-                st.success("🟢 Available")
+                st.success(
+                    "🟢 Available"
+                )
+
 
             st.caption(
                 f"Updated: {bed[3]}"
             )
 
 
+# =========================================================
+# NAVIGATION
+# =========================================================
+
 st.divider()
 
 
-if st.button("⬅️ Back to Admin Dashboard"):
+if st.button(
+    "⬅️ Back to Admin Dashboard"
+):
 
     st.switch_page(
         "pages/admin_dashboard.py"
-    )
+            )
