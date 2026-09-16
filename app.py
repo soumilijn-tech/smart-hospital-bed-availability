@@ -10,16 +10,16 @@ from services.hospitals import (
 )
 
 
-# =========================
+# =========================================================
 # DATABASE PATH
-# =========================
+# =========================================================
 
 DB_PATH = Path(__file__).resolve().parent / "database" / "hospital.db"
 
 
-# =========================
+# =========================================================
 # PAGE CONFIG
-# =========================
+# =========================================================
 
 st.set_page_config(
     page_title="Smart Hospital Bed Availability",
@@ -28,9 +28,9 @@ st.set_page_config(
 )
 
 
-# =========================
+# =========================================================
 # HEADER
-# =========================
+# =========================================================
 
 st.title("🏥 Smart Hospital Bed Availability System")
 
@@ -39,9 +39,9 @@ st.write(
 )
 
 
-# =========================
+# =========================================================
 # NAVIGATION
-# =========================
+# =========================================================
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -112,9 +112,9 @@ if st.button(
 
     else:
 
-        # =========================
+        # =================================================
         # GEOCODING
-        # =========================
+        # =================================================
 
         with st.spinner(
             "📍 Finding your location..."
@@ -123,10 +123,10 @@ if st.button(
             try:
 
                 coordinates = geocode_location(
-                    location
+                    location.strip()
                 )
 
-            except Exception:
+            except Exception as e:
 
                 coordinates = None
 
@@ -148,9 +148,9 @@ if st.button(
             lon = coordinates["lon"]
 
 
-            # =========================
+            # =================================================
             # HOSPITAL SEARCH
-            # =========================
+            # =================================================
 
             with st.spinner(
                 "🏥 Searching nearby hospitals..."
@@ -161,44 +161,46 @@ if st.button(
                     hospitals = cached_hospital_search(
                         round(lat, 4),
                         round(lon, 4),
-                        radius * 1000
+                        radius * 1000,
+                        location.strip()
                     )
 
-                except Exception:
+                except Exception as e:
 
                     hospitals = []
 
                     st.error(
-                        "❌ Hospital search failed. "
-                        "Please try again."
+                        f"❌ Hospital search failed: {e}"
                     )
 
 
+            # =================================================
+            # NO HOSPITALS FOUND
+            # =================================================
+
             if not hospitals:
 
-    st.error(
-        "❌ Hospital search returned 0 results."
-    )
+                st.error(
+                    "❌ Hospital search returned 0 results."
+                )
 
-    st.info(
-        f"📍 Resolved location: "
-        f"{lat}, {lon}"
-    )
+                st.info(
+                    f"📍 Resolved location: {lat}, {lon}"
+                )
 
-    st.info(
-        f"📏 Search radius: {radius} KM"
-    )
+                st.info(
+                    f"📏 Search radius: {radius} KM"
+                )
 
-    st.warning(
-        "The location was found, but the "
-        "hospital data service returned no hospitals."
-    )
+                st.warning(
+                    "The location was found, but the "
+                    "hospital data service returned no hospitals."
+                )
 
-else:
 
-    st.success(
-        f"🏥 {len(hospitals)} hospital(s) found!"
-    )
+            # =================================================
+            # HOSPITALS FOUND
+            # =================================================
 
             else:
 
@@ -207,9 +209,9 @@ else:
                 )
 
 
-                # =========================
+                # =================================================
                 # MAP
-                # =========================
+                # =================================================
 
                 st.subheader("🗺️ Hospital Map")
 
@@ -231,9 +233,9 @@ else:
                 )
 
 
-                # =========================
+                # =================================================
                 # HOSPITAL LIST
-                # =========================
+                # =================================================
 
                 st.subheader(
                     "🏥 Nearby Hospitals"
@@ -254,6 +256,10 @@ else:
                         col1, col2, col3 = st.columns(3)
 
 
+                        # =================================================
+                        # HOSPITAL INFORMATION
+                        # =================================================
+
                         with col1:
 
                             st.write(
@@ -267,6 +273,10 @@ else:
                             )
 
 
+                        # =================================================
+                        # DISTANCE
+                        # =================================================
+
                         with col2:
 
                             st.metric(
@@ -274,6 +284,10 @@ else:
                                 f"{hospital['distance']} KM"
                             )
 
+
+                        # =================================================
+                        # DIRECTIONS
+                        # =================================================
 
                         with col3:
 
@@ -349,6 +363,7 @@ def get_hospital_data():
         ).fillna(0)
     )
 
+
     df["available_beds"] = (
         pd.to_numeric(
             df["available_beds"],
@@ -366,6 +381,10 @@ def get_hospital_data():
 
     return df
 
+
+# =========================================================
+# BED DETAILS
+# =========================================================
 
 def get_bed_details(hospital_id):
 
@@ -397,7 +416,7 @@ def get_bed_details(hospital_id):
 
 
 # =========================================================
-# LIVE BED AVAILABILITY SECTION
+# LIVE BED AVAILABILITY
 # =========================================================
 
 @st.fragment(run_every="30s")
@@ -412,9 +431,9 @@ def live_bed_availability():
     )
 
 
-    # =========================
+    # =================================================
     # LOAD DATABASE
-    # =========================
+    # =================================================
 
     try:
 
@@ -429,9 +448,9 @@ def live_bed_availability():
         return
 
 
-    # =========================
-    # NO HOSPITAL
-    # =========================
+    # =================================================
+    # NO HOSPITAL DATA
+    # =================================================
 
     if df.empty:
 
@@ -442,9 +461,9 @@ def live_bed_availability():
         return
 
 
-    # =========================
-    # SUMMARY
-    # =========================
+    # =================================================
+    # OVERALL SUMMARY
+    # =================================================
 
     total_beds = int(
         df["total_beds"].sum()
@@ -494,9 +513,9 @@ def live_bed_availability():
     st.divider()
 
 
-    # =========================
-    # HOSPITAL CARDS
-    # =========================
+    # =================================================
+    # HOSPITAL BED CARDS
+    # =================================================
 
     for _, hospital in df.iterrows():
 
@@ -512,9 +531,9 @@ def live_bed_availability():
             col1, col2, col3 = st.columns(3)
 
 
-            # =========================
+            # =================================================
             # TOTAL BEDS
-            # =========================
+            # =================================================
 
             with col1:
 
@@ -526,9 +545,9 @@ def live_bed_availability():
                 )
 
 
-            # =========================
+            # =================================================
             # AVAILABLE BEDS
-            # =========================
+            # =================================================
 
             with col2:
 
@@ -542,9 +561,9 @@ def live_bed_availability():
                 )
 
 
-            # =========================
+            # =================================================
             # OCCUPIED BEDS
-            # =========================
+            # =================================================
 
             with col3:
 
@@ -556,9 +575,9 @@ def live_bed_availability():
                 )
 
 
-            # =========================
+            # =================================================
             # BED STATUS
-            # =========================
+            # =================================================
 
             if available == 0:
 
@@ -579,9 +598,9 @@ def live_bed_availability():
                 )
 
 
-            # =========================
+            # =================================================
             # HOSPITAL INFORMATION
-            # =========================
+            # =================================================
 
             col1, col2 = st.columns(2)
 
@@ -623,9 +642,9 @@ def live_bed_availability():
                     )
 
 
-            # =========================
+            # =================================================
             # BED TYPE DETAILS
-            # =========================
+            # =================================================
 
             bed_df = get_bed_details(
                 int(
