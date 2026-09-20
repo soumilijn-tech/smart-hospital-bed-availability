@@ -1,13 +1,16 @@
-import math
-import sqlite3
-from pathlib import Path
+# ============================================================
+# SMART HOSPITAL BED AVAILABILITY SYSTEM
+# ============================================================
 
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import sqlite3
+import math
+from pathlib import Path
 
 
 # ============================================================
-# PAGE CONFIG
+# PAGE CONFIGURATION
 # ============================================================
 
 st.set_page_config(
@@ -24,406 +27,52 @@ st.set_page_config(
 BASE_DIR = Path(__file__).resolve().parent
 
 CSV_PATH = BASE_DIR / "hospital_directory.csv"
+
 DB_PATH = BASE_DIR / "database" / "hospital.db"
 
 
 # ============================================================
-# HEADER
+# TITLE
 # ============================================================
 
 st.title("🏥 Smart Hospital Bed Availability System")
 
-st.caption(
-    "Find hospitals across India and view registered bed availability."
+st.write(
+    "Find hospitals, check bed availability, and identify hospitals "
+    "based on current resource availability."
 )
 
 
 # ============================================================
-# SAFE TEXT
+# LOAD HOSPITAL DIRECTORY CSV
 # ============================================================
 
-def safe_text(value, default="Not available"):
-
-    if value is None:
-        return default
-
-    try:
-        text = str(value).strip()
-
-        if text and text.lower() not in {
-            "nan",
-            "none",
-            "null"
-        }:
-            return text
-
-    except Exception:
-        pass
-
-    return default
-
-
-# ============================================================
-# LOAD HOSPITAL DIRECTORY
-# ============================================================
-
-@st.cache_data(show_spinner=False)
+@st.cache_data
 def load_hospital_directory():
 
     if not CSV_PATH.exists():
         return pd.DataFrame()
 
-    for encoding in (
-        "utf-8",
-        "utf-8-sig",
-        "latin1"
-    ):
-
-        try:
-
-            df = pd.read_csv(
-                CSV_PATH,
-                encoding=encoding,
-                low_memory=False
-            )
-
-            df.columns = (
-                df.columns
-                .astype(str)
-                .str.strip()
-                .str.lower()
-                .str.replace(
-                    r"[^a-z0-9]+",
-                    "_",
-                    regex=True
-                )
-                .str.strip("_")
-            )
-
-            return df
-
-        except Exception:
-            continue
-
-    return pd.DataFrame()
-
-
-# ============================================================
-# FIND COLUMN
-# ============================================================
-
-def find_column(df, names):
-
-    if df is None or df.empty:
-        return None
-
-    for name in names:
-
-        if name in df.columns:
-            return name
-
-    return None
-
-
-# ============================================================
-# HAVERSINE DISTANCE
-# ============================================================
-
-def haversine(
-    lat1,
-    lon1,
-    lat2,
-    lon2
-):
-
     try:
+        df = pd.read_csv(CSV_PATH, low_memory=False)
 
-        lat1, lon1, lat2, lon2 = map(
-            float,
-            (
-                lat1,
-                lon1,
-                lat2,
-                lon2
-            )
+        # Normalize column names
+        df.columns = (
+            df.columns
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .str.replace(" ", "_")
         )
 
-        radius = 6371.0
+        return df
 
-        dlat = math.radians(
-            lat2 - lat1
-        )
-
-        dlon = math.radians(
-            lon2 - lon1
-        )
-
-        a = (
-            math.sin(dlat / 2) ** 2
-            +
-            math.cos(math.radians(lat1))
-            *
-            math.cos(math.radians(lat2))
-            *
-            math.sin(dlon / 2) ** 2
-        )
-
-        return (
-            radius
-            * 2
-            * math.atan2(
-                math.sqrt(a),
-                math.sqrt(1 - a)
-            )
-        )
-
-    except Exception:
-
-        return None
+    except Exception as e:
+        st.error(f"Unable to load hospital directory: {e}")
+        return pd.DataFrame()
 
 
-# ============================================================
-# SEARCH HOSPITALS
-# ============================================================
-
-def search_hospitals(
-    query,
-    radius_km=None,
-    user_lat=None,
-    user_lon=None
-):
-
-    df = load_hospital_directory()
-
-    if df.empty:
-        return []
-
-    query = safe_text(
-        query,
-        ""
-    ).lower()
-
-    if not query:
-        return []
-
-    name_col = find_column(
-        df,
-        [
-            "hospital_name",
-            "hospitalname",
-            "hospital",
-            "name"
-        ]
-    )
-
-    state_col = find_column(
-        df,
-        [
-            "state",
-            "state_name"
-        ]
-    )
-
-    district_col = find_column(
-        df,
-        [
-            "district",
-            "district_name"
-        ]
-    )
-
-    address_col = find_column(
-        df,
-        [
-            "address",
-            "hospital_address",
-            "location",
-            "hospital_location"
-        ]
-    )
-
-    phone_col = find_column(
-        df,
-        [
-            "phone",
-            "telephone",
-            "telephone_no",
-            "mobile",
-            "contact_number",
-            "contact"
-        ]
-    )
-
-    lat_col = find_column(
-        df,
-        [
-            "latitude",
-            "lat"
-        ]
-    )
-
-    lon_col = find_column(
-        df,
-        [
-            "longitude",
-            "lon",
-            "lng"
-        ]
-    )
-
-    if name_col is None:
-        return []
-
-    mask = pd.Series(
-        False,
-        index=df.index
-    )
-
-    search_columns = [
-        name_col,
-        state_col,
-        district_col,
-        address_col
-    ]
-
-    for col in search_columns:
-
-        if col is None:
-            continue
-
-        try:
-
-            values = (
-                df[col]
-                .fillna("")
-                .astype(str)
-                .str.lower()
-            )
-
-            mask |= values.str.contains(
-                query,
-                regex=False,
-                na=False
-            )
-
-        except Exception:
-            pass
-
-    results = df.loc[mask].copy()
-
-    if results.empty:
-        return []
-
-    hospitals = []
-
-    for _, row in results.iterrows():
-
-        try:
-
-            lat = None
-            lon = None
-
-            if lat_col:
-
-                try:
-                    lat = float(
-                        row[lat_col]
-                    )
-                except Exception:
-                    pass
-
-            if lon_col:
-
-                try:
-                    lon = float(
-                        row[lon_col]
-                    )
-                except Exception:
-                    pass
-
-            distance = None
-
-            if (
-                user_lat is not None
-                and user_lon is not None
-                and lat is not None
-                and lon is not None
-            ):
-
-                distance = haversine(
-                    user_lat,
-                    user_lon,
-                    lat,
-                    lon
-                )
-
-            hospitals.append(
-                {
-                    "name": safe_text(
-                        row[name_col]
-                    ),
-                    "address": (
-                        safe_text(
-                            row[address_col]
-                        )
-                        if address_col
-                        else "Not available"
-                    ),
-                    "phone": (
-                        safe_text(
-                            row[phone_col]
-                        )
-                        if phone_col
-                        else "Not available"
-                    ),
-                    "state": (
-                        safe_text(
-                            row[state_col],
-                            ""
-                        )
-                        if state_col
-                        else ""
-                    ),
-                    "district": (
-                        safe_text(
-                            row[district_col],
-                            ""
-                        )
-                        if district_col
-                        else ""
-                    ),
-                    "latitude": lat,
-                    "longitude": lon,
-                    "distance": distance
-                }
-            )
-
-        except Exception:
-            continue
-
-    if (
-        radius_km is not None
-        and user_lat is not None
-        and user_lon is not None
-    ):
-
-        hospitals = [
-            h
-            for h in hospitals
-            if (
-                h["distance"] is None
-                or h["distance"] <= radius_km
-            )
-        ]
-
-        hospitals.sort(
-            key=lambda h:
-                h["distance"]
-                if h["distance"] is not None
-                else float("inf")
-        )
-
-    return hospitals[:50]
+hospital_directory = load_hospital_directory()
 
 
 # ============================================================
@@ -432,299 +81,362 @@ def search_hospitals(
 
 def get_connection():
 
-    if not DB_PATH.exists():
-        return None
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    try:
-
-        return sqlite3.connect(
-            DB_PATH,
-            timeout=10
-        )
-
-    except Exception:
-
-        return None
+    return sqlite3.connect(DB_PATH)
 
 
 # ============================================================
-# READ DATABASE TABLE
+# FIND COLUMN FROM POSSIBLE COLUMN NAMES
 # ============================================================
 
-def table_df(
-    conn,
-    table_name
-):
+def find_column(df, possible_names):
 
-    try:
+    for name in possible_names:
 
-        return pd.read_sql_query(
-            f'SELECT * FROM "{table_name}"',
-            conn
-        )
-
-    except Exception:
-
-        return pd.DataFrame()
-
-
-# ============================================================
-# FIND DATABASE COLUMN
-# ============================================================
-
-def first_column(
-    df,
-    names
-):
-
-    if df.empty:
-        return None
-
-    lower_map = {
-        str(c).strip().lower(): c
-        for c in df.columns
-    }
-
-    for name in names:
-
-        if name in lower_map:
-            return lower_map[name]
+        if name in df.columns:
+            return name
 
     return None
 
 
 # ============================================================
-# GET HOSPITAL BED DATA
+# BED RESOURCE STATUS
 # ============================================================
 
-def get_hospital_data():
+def get_bed_status(total_beds, available_beds):
 
-    conn = get_connection()
+    try:
+        total_beds = float(total_beds)
+        available_beds = float(available_beds)
 
-    if conn is None:
-        return pd.DataFrame()
+    except Exception:
+        return "⚪ Unknown"
+
+    if total_beds <= 0:
+        return "⚪ Unknown"
+
+    if available_beds <= 0:
+        return "🔴 Full"
+
+    percentage = (available_beds / total_beds) * 100
+
+    if percentage <= 15:
+        return "🟠 Critical"
+
+    elif percentage <= 30:
+        return "🟡 Low"
+
+    else:
+        return "🟢 Available"
+
+
+# ============================================================
+# HAVERSINE DISTANCE
+# ============================================================
+
+def haversine_distance(lat1, lon1, lat2, lon2):
 
     try:
 
-        hospitals = table_df(
-            conn,
-            "hospitals"
+        lat1 = float(lat1)
+        lon1 = float(lon1)
+        lat2 = float(lat2)
+        lon2 = float(lon2)
+
+        radius = 6371
+
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+
+        a = (
+            math.sin(dlat / 2) ** 2
+            + math.cos(math.radians(lat1))
+            * math.cos(math.radians(lat2))
+            * math.sin(dlon / 2) ** 2
         )
 
-        beds = table_df(
-            conn,
-            "beds"
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+        return radius * c
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# GET BED DATA FROM DATABASE
+# ============================================================
+
+def get_hospital_bed_data():
+
+    try:
+
+        conn = get_connection()
+
+        tables = pd.read_sql_query(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table'
+            """,
+            conn
         )
 
-    finally:
+        table_names = tables["name"].tolist()
+
+        if "hospitals" not in table_names:
+
+            conn.close()
+
+            return pd.DataFrame()
+
+        hospitals = pd.read_sql_query(
+            "SELECT * FROM hospitals",
+            conn
+        )
+
+        if "beds" in table_names:
+
+            beds = pd.read_sql_query(
+                "SELECT * FROM beds",
+                conn
+            )
+
+        else:
+
+            beds = pd.DataFrame()
 
         conn.close()
 
-    if hospitals.empty or beds.empty:
-        return pd.DataFrame()
+        if hospitals.empty:
 
-    hospital_id = first_column(
-        hospitals,
-        [
-            "id",
-            "hospital_id",
-            "hospitalid"
-        ]
-    )
+            return pd.DataFrame()
 
-    hospital_name = first_column(
-        hospitals,
-        [
-            "name",
-            "hospital_name",
-            "hospitalname"
-        ]
-    )
+        # ----------------------------------------------------
+        # Find hospital columns
+        # ----------------------------------------------------
 
-    hospital_address = first_column(
-        hospitals,
-        [
-            "address",
-            "hospital_address"
-        ]
-    )
-
-    hospital_phone = first_column(
-        hospitals,
-        [
-            "phone",
-            "telephone",
-            "contact",
-            "contact_number"
-        ]
-    )
-
-    bed_hospital_id = first_column(
-        beds,
-        [
-            "hospital_id",
-            "hospitalid",
-            "h_id"
-        ]
-    )
-
-    total_beds = first_column(
-        beds,
-        [
-            "total_beds",
-            "total_bed",
-            "beds"
-        ]
-    )
-
-    available_beds = first_column(
-        beds,
-        [
-            "available_beds",
-            "available_bed",
-            "available"
-        ]
-    )
-
-    if (
-        hospital_id is None
-        or hospital_name is None
-        or bed_hospital_id is None
-        or total_beds is None
-        or available_beds is None
-    ):
-
-        return pd.DataFrame()
-
-    beds[total_beds] = pd.to_numeric(
-        beds[total_beds],
-        errors="coerce"
-    ).fillna(0)
-
-    beds[available_beds] = pd.to_numeric(
-        beds[available_beds],
-        errors="coerce"
-    ).fillna(0)
-
-    summary = (
-        beds
-        .groupby(
-            bed_hospital_id,
-            dropna=False
+        hospital_id_col = find_column(
+            hospitals,
+            [
+                "id",
+                "hospital_id",
+                "hospitalid"
+            ]
         )
-        .agg(
-            total_beds=(
-                total_beds,
-                "sum"
-            ),
-            available_beds=(
-                available_beds,
-                "sum"
+
+        name_col = find_column(
+            hospitals,
+            [
+                "name",
+                "hospital_name",
+                "hospital"
+            ]
+        )
+
+        address_col = find_column(
+            hospitals,
+            [
+                "address",
+                "location"
+            ]
+        )
+
+        phone_col = find_column(
+            hospitals,
+            [
+                "phone",
+                "phone_number",
+                "contact",
+                "contact_number"
+            ]
+        )
+
+        # ----------------------------------------------------
+        # Rename hospital columns
+        # ----------------------------------------------------
+
+        result = hospitals.copy()
+
+        if hospital_id_col:
+            result = result.rename(
+                columns={hospital_id_col: "hospital_id"}
             )
+
+        else:
+
+            result["hospital_id"] = range(
+                1,
+                len(result) + 1
+            )
+
+        if name_col:
+            result = result.rename(
+                columns={name_col: "hospital_name"}
+            )
+
+        else:
+
+            result["hospital_name"] = "Hospital"
+
+        if address_col:
+            result = result.rename(
+                columns={address_col: "address"}
+            )
+
+        else:
+
+            result["address"] = "Address not available"
+
+        if phone_col:
+            result = result.rename(
+                columns={phone_col: "phone"}
+            )
+
+        else:
+
+            result["phone"] = "Not available"
+
+        # ----------------------------------------------------
+        # Process bed table
+        # ----------------------------------------------------
+
+        if not beds.empty:
+
+            bed_hospital_id = find_column(
+                beds,
+                [
+                    "hospital_id",
+                    "hospitalid",
+                    "hospital"
+                ]
+            )
+
+            total_col = find_column(
+                beds,
+                [
+                    "total_beds",
+                    "total_bed",
+                    "total"
+                ]
+            )
+
+            available_col = find_column(
+                beds,
+                [
+                    "available_beds",
+                    "available_bed",
+                    "available"
+                ]
+            )
+
+            if bed_hospital_id and total_col and available_col:
+
+                beds = beds.copy()
+
+                beds[total_col] = pd.to_numeric(
+                    beds[total_col],
+                    errors="coerce"
+                ).fillna(0)
+
+                beds[available_col] = pd.to_numeric(
+                    beds[available_col],
+                    errors="coerce"
+                ).fillna(0)
+
+                bed_summary = (
+                    beds
+                    .groupby(bed_hospital_id)
+                    .agg(
+                        total_beds=(total_col, "sum"),
+                        available_beds=(available_col, "sum")
+                    )
+                    .reset_index()
+                )
+
+                bed_summary = bed_summary.rename(
+                    columns={
+                        bed_hospital_id: "hospital_id"
+                    }
+                )
+
+                result["hospital_id"] = result[
+                    "hospital_id"
+                ].astype(str)
+
+                bed_summary["hospital_id"] = bed_summary[
+                    "hospital_id"
+                ].astype(str)
+
+                result = result.merge(
+                    bed_summary,
+                    on="hospital_id",
+                    how="left"
+                )
+
+            else:
+
+                result["total_beds"] = 0
+                result["available_beds"] = 0
+
+        else:
+
+            result["total_beds"] = 0
+            result["available_beds"] = 0
+
+        result["total_beds"] = pd.to_numeric(
+            result["total_beds"],
+            errors="coerce"
+        ).fillna(0)
+
+        result["available_beds"] = pd.to_numeric(
+            result["available_beds"],
+            errors="coerce"
+        ).fillna(0)
+
+        result["occupied_beds"] = (
+            result["total_beds"]
+            - result["available_beds"]
+        ).clip(lower=0)
+
+        result["occupancy_percent"] = 0.0
+
+        mask = result["total_beds"] > 0
+
+        result.loc[mask, "occupancy_percent"] = (
+            result.loc[mask, "occupied_beds"]
+            / result.loc[mask, "total_beds"]
+            * 100
         )
-        .reset_index()
-    )
 
-    summary = summary.rename(
-        columns={
-            bed_hospital_id:
-                "hospital_key"
-        }
-    )
-
-    hospitals = hospitals.copy()
-
-    hospitals["hospital_key"] = (
-        hospitals[hospital_id]
-        .astype(str)
-    )
-
-    summary["hospital_key"] = (
-        summary["hospital_key"]
-        .astype(str)
-    )
-
-    selected_columns = [
-        "hospital_key",
-        hospital_name
-    ]
-
-    if hospital_address is not None:
-
-        selected_columns.append(
-            hospital_address
+        result["status"] = result.apply(
+            lambda row: get_bed_status(
+                row["total_beds"],
+                row["available_beds"]
+            ),
+            axis=1
         )
 
-    if hospital_phone is not None:
+        return result
 
-        selected_columns.append(
-            hospital_phone
+    except Exception as e:
+
+        st.warning(
+            f"Bed database could not be loaded: {e}"
         )
 
-    hospital_info = hospitals[
-        selected_columns
-    ]
-
-    result = hospital_info.merge(
-        summary,
-        on="hospital_key",
-        how="inner"
-    )
-
-    result = result.rename(
-        columns={
-            hospital_name: "name"
-        }
-    )
-
-    if hospital_address is not None:
-
-        result = result.rename(
-            columns={
-                hospital_address:
-                    "address"
-            }
-        )
-
-    else:
-
-        result["address"] = (
-            "Not available"
-        )
-
-    if hospital_phone is not None:
-
-        result = result.rename(
-            columns={
-                hospital_phone:
-                    "phone"
-            }
-        )
-
-    else:
-
-        result["phone"] = (
-            "Not available"
-        )
-
-    return result[
-        [
-            "name",
-            "address",
-            "phone",
-            "total_beds",
-            "available_beds"
-        ]
-    ]
+        return pd.DataFrame()
 
 
 # ============================================================
 # QUICK ACCESS
 # ============================================================
 
-st.subheader("🔐 Quick Access")
+st.subheader("🚀 Quick Access")
 
 col1, col2, col3, col4 = st.columns(4)
+
 
 with col1:
 
@@ -734,15 +446,11 @@ with col1:
     ):
 
         try:
+            st.switch_page("pages/patient_login.py")
 
-            st.switch_page(
-                "pages/patient_login.py"
-            )
-
-        except Exception as e:
-
-            st.error(
-                f"Patient login page not available: {e}"
+        except Exception:
+            st.info(
+                "Patient login page is not available yet."
             )
 
 
@@ -754,35 +462,27 @@ with col2:
     ):
 
         try:
+            st.switch_page("pages/patient_register.py")
 
-            st.switch_page(
-                "pages/patient_register.py"
-            )
-
-        except Exception as e:
-
-            st.error(
-                f"Patient register page not available: {e}"
+        except Exception:
+            st.info(
+                "Patient registration page is not available yet."
             )
 
 
 with col3:
 
     if st.button(
-        "🛠️ Admin Login",
+        "🔐 Admin Login",
         width="stretch"
     ):
 
         try:
+            st.switch_page("pages/admin_login.py")
 
-            st.switch_page(
-                "pages/admin_login.py"
-            )
-
-        except Exception as e:
-
-            st.error(
-                f"Admin login page not available: {e}"
+        except Exception:
+            st.info(
+                "Admin login page is not available yet."
             )
 
 
@@ -794,15 +494,11 @@ with col4:
     ):
 
         try:
+            st.switch_page("pages/patient_dashboard.py")
 
-            st.switch_page(
-                "pages/patient_dashboard.py"
-            )
-
-        except Exception as e:
-
-            st.error(
-                f"Patient dashboard page not available: {e}"
+        except Exception:
+            st.info(
+                "Patient dashboard is not available yet."
             )
 
 
@@ -813,143 +509,97 @@ st.divider()
 # HOSPITAL SEARCH
 # ============================================================
 
-st.subheader("🔎 Find Hospitals")
+st.header("🔎 Find Hospitals")
 
-location = st.text_input(
-    "Enter city, district, state or hospital name",
-    placeholder="Example: Kolkata"
-)
+if hospital_directory.empty:
 
-radius = st.slider(
-    "Search Radius (KM)",
-    1,
-    100,
-    10
-)
+    st.warning(
+        "hospital_directory.csv was not found. "
+        "Please keep it in the same folder as app.py."
+    )
 
+else:
 
-if st.button(
-    "🔍 Search Hospitals",
-    type="primary",
-    width="stretch"
-):
+    search_text = st.text_input(
+        "Search hospital",
+        placeholder="Hospital name, state, district or address"
+    )
 
-    with st.spinner(
-        "Searching hospital directory..."
-    ):
+    search_button = st.button(
+        "🔍 Search Hospitals",
+        width="stretch"
+    )
 
-        results = search_hospitals(
-            location,
-            radius_km=radius
-        )
+    if search_button:
 
-    if not results:
+        if not search_text.strip():
 
-        if not CSV_PATH.exists():
-
-            st.error(
-                f"hospital_directory.csv was not found at: {CSV_PATH}"
+            st.warning(
+                "Please enter a hospital name, state, district or address."
             )
 
         else:
 
-            st.warning(
-                "No matching hospitals found. "
-                "Try a city, district, state or hospital name."
-            )
+            query = search_text.strip().lower()
 
-    else:
+            searchable_columns = [
+                "hospital_name",
+                "state",
+                "district",
+                "address"
+            ]
 
-        st.success(
-            f"Found {len(results)} hospital(s)."
-        )
+            available_columns = [
+                col
+                for col in searchable_columns
+                if col in hospital_directory.columns
+            ]
 
-        map_rows = []
+            if available_columns:
 
-        for hospital in results:
-
-            lat = hospital["latitude"]
-            lon = hospital["longitude"]
-
-            if (
-                lat is not None
-                and lon is not None
-            ):
-
-                map_rows.append(
-                    {
-                        "latitude": lat,
-                        "longitude": lon
-                    }
+                mask = pd.Series(
+                    False,
+                    index=hospital_directory.index
                 )
 
-            with st.container(
-                border=True
-            ):
+                for col in available_columns:
 
-                st.markdown(
-                    f"### 🏥 {hospital['name']}"
+                    mask = (
+                        mask
+                        | hospital_directory[col]
+                        .astype(str)
+                        .str.lower()
+                        .str.contains(
+                            query,
+                            na=False
+                        )
+                    )
+
+                search_results = hospital_directory[
+                    mask
+                ].copy()
+
+            else:
+
+                search_results = pd.DataFrame()
+
+            if search_results.empty:
+
+                st.info(
+                    "No hospitals found for your search."
                 )
 
-                st.write(
-                    f"📍 **Address:** "
-                    f"{hospital['address']}"
+            else:
+
+                st.success(
+                    f"{len(search_results)} hospital(s) found."
                 )
 
-                st.write(
-                    f"📞 **Phone:** "
-                    f"{hospital['phone']}"
+                st.dataframe(
+                    search_results.head(100),
+                    width="stretch",
+                    hide_index=True
                 )
-
-                if (
-                    hospital["state"]
-                    or hospital["district"]
-                ):
-
-                    st.write(
-                        f"🗺️ **Location:** "
-                        f"{hospital['district']}, "
-                        f"{hospital['state']}"
-                    )
-
-                if (
-                    hospital["distance"]
-                    is not None
-                ):
-
-                    st.write(
-                        f"📏 **Distance:** "
-                        f"{hospital['distance']:.2f} km"
-                    )
-
-                if (
-                    lat is not None
-                    and lon is not None
-                ):
-
-                    maps_url = (
-                        "https://www.google.com/maps/dir/"
-                        "?api=1"
-                        f"&destination={lat},{lon}"
-                    )
-
-                    st.link_button(
-                        "🧭 Get Directions",
-                        maps_url,
-                        width="stretch"
-                    )
-
-        if map_rows:
-
-            st.subheader(
-                "🗺️ Hospital Map"
-            )
-
-            st.map(
-                pd.DataFrame(map_rows),
-                latitude="latitude",
-                longitude="longitude"
-            )
 
 
 st.divider()
@@ -959,177 +609,277 @@ st.divider()
 # BED AVAILABILITY
 # ============================================================
 
-st.subheader(
-    "🛏️ Registered Hospital Bed Availability"
-)
+st.header("🛏️ Current Bed Availability")
 
-
-if st.button(
+refresh = st.button(
     "🔄 Refresh Bed Data",
     width="stretch"
-):
+)
 
+if refresh:
+
+    st.cache_data.clear()
     st.rerun()
 
 
-bed_df = get_hospital_data()
+bed_df = get_hospital_bed_data()
 
 
 if bed_df.empty:
 
-    if not DB_PATH.exists():
+    st.info(
+        "No registered hospital bed data is currently available."
+    )
 
-        st.info(
-            "No hospital database found yet. "
-            "Directory search is still available."
+else:
+
+    # --------------------------------------------------------
+    # OVERALL METRICS
+    # --------------------------------------------------------
+
+    total_beds = int(
+        bed_df["total_beds"].sum()
+    )
+
+    available_beds = int(
+        bed_df["available_beds"].sum()
+    )
+
+    occupied_beds = int(
+        bed_df["occupied_beds"].sum()
+    )
+
+    if total_beds > 0:
+
+        occupancy = (
+            occupied_beds
+            / total_beds
+            * 100
         )
 
     else:
 
-        st.info(
-            "No compatible registered hospital "
-            "bed data is available in the database yet."
+        occupancy = 0
+
+    m1, m2, m3, m4 = st.columns(4)
+
+    with m1:
+
+        st.metric(
+            "🛏️ Total Beds",
+            f"{total_beds:,}"
         )
 
-else:
+    with m2:
 
-    total_beds = int(
-        pd.to_numeric(
-            bed_df["total_beds"],
-            errors="coerce"
+        st.metric(
+            "🟢 Available Beds",
+            f"{available_beds:,}"
         )
-        .fillna(0)
-        .sum()
-    )
 
-    available_beds = int(
-        pd.to_numeric(
-            bed_df["available_beds"],
-            errors="coerce"
+    with m3:
+
+        st.metric(
+            "🔴 Occupied Beds",
+            f"{occupied_beds:,}"
         )
-        .fillna(0)
-        .sum()
-    )
 
-    occupied_beds = max(
-        total_beds - available_beds,
-        0
-    )
+    with m4:
 
-    c1, c2, c3 = st.columns(3)
+        st.metric(
+            "📊 Occupancy",
+            f"{occupancy:.1f}%"
+        )
 
-    c1.metric(
-        "Total Beds",
-        total_beds
-    )
+    st.subheader("🏥 Hospital Resource Status")
 
-    c2.metric(
-        "Available Beds",
-        available_beds
-    )
-
-    c3.metric(
-        "Occupied Beds",
-        occupied_beds
-    )
+    # --------------------------------------------------------
+    # HOSPITAL CARDS
+    # --------------------------------------------------------
 
     for _, row in bed_df.iterrows():
 
-        available = int(
-            row["available_beds"]
+        name = str(
+            row.get(
+                "hospital_name",
+                "Hospital"
+            )
         )
 
         total = int(
-            row["total_beds"]
+            row.get(
+                "total_beds",
+                0
+            )
         )
 
-        if available == 0:
-
-            status = (
-                "🔴 No bed available"
+        available = int(
+            row.get(
+                "available_beds",
+                0
             )
+        )
 
-        elif available <= 2:
-
-            status = (
-                "🟠 Low availability"
+        occupied = int(
+            row.get(
+                "occupied_beds",
+                0
             )
+        )
 
-        else:
-
-            status = (
-                "🟢 Available"
+        occupancy_value = float(
+            row.get(
+                "occupancy_percent",
+                0
             )
+        )
 
-        with st.container(
-            border=True
+        status = row.get(
+            "status",
+            "⚪ Unknown"
+        )
+
+        address = row.get(
+            "address",
+            "Address not available"
+        )
+
+        phone = row.get(
+            "phone",
+            "Not available"
+        )
+
+        with st.expander(
+            f"🏥 {name} — {status}"
         ):
 
-            st.markdown(
-                f"### 🏥 {safe_text(row['name'])}"
+            c1, c2, c3, c4 = st.columns(4)
+
+            with c1:
+
+                st.metric(
+                    "Total Beds",
+                    total
+                )
+
+            with c2:
+
+                st.metric(
+                    "Available",
+                    available
+                )
+
+            with c3:
+
+                st.metric(
+                    "Occupied",
+                    occupied
+                )
+
+            with c4:
+
+                st.metric(
+                    "Occupancy",
+                    f"{occupancy_value:.1f}%"
+                )
+
+            st.write(
+                f"**Resource Status:** {status}"
             )
 
             st.write(
-                f"📍 {safe_text(row['address'])}"
+                f"📍 **Address:** {address}"
             )
 
             st.write(
-                f"📞 {safe_text(row['phone'])}"
+                f"📞 **Phone:** {phone}"
             )
-
-            st.write(
-                f"🛏️ **{available} / {total} "
-                f"beds available**"
-            )
-
-            st.write(status)
 
 
 st.divider()
 
 
 # ============================================================
+# RESOURCE STATUS GUIDE
+# ============================================================
+
+st.header("📌 Bed Resource Status")
+
+guide1, guide2, guide3, guide4 = st.columns(4)
+
+with guide1:
+    st.success(
+        "🟢 Available\n\n"
+        "More than 30% beds available"
+    )
+
+with guide2:
+    st.warning(
+        "🟡 Low\n\n"
+        "15–30% beds available"
+    )
+
+with guide3:
+    st.warning(
+        "🟠 Critical\n\n"
+        "1–15% beds available"
+    )
+
+with guide4:
+    st.error(
+        "🔴 Full\n\n"
+        "No beds available"
+    )
+
+
+# ============================================================
 # SYSTEM INFORMATION
 # ============================================================
 
-with st.expander(
-    "ℹ️ System Information"
-):
+st.divider()
 
-    st.write(
-        f"**Hospital directory:** "
-        f"{CSV_PATH.name}"
-    )
+st.header("ℹ️ System Information")
 
-    st.write(
-        f"**Directory available:** "
-        f"{'Yes' if CSV_PATH.exists() else 'No'}"
-    )
+st.write(
+    """
+    **Current modules:**
 
-    st.write(
-        f"**Database available:** "
-        f"{'Yes' if DB_PATH.exists() else 'No'}"
-    )
+    - 🏥 Hospital Directory
+    - 🔎 Hospital Search
+    - 🛏️ Bed Availability
+    - 📊 Occupancy Calculation
+    - 🚦 Bed Resource Status
+    - 👤 Patient Login
+    - 📝 Patient Registration
+    - 🔐 Admin Login
+    - 📊 Patient Dashboard
 
-    directory_df = (
-        load_hospital_directory()
-    )
+    **Planned advanced modules:**
 
-    if not directory_df.empty:
+    - 👨‍⚕️ Doctor Availability
+    - 🩺 Equipment Availability
+    - 🚑 Emergency Requirement Search
+    - 🔗 Hospital Matching Engine
+    - ✅ Hospital Confirmation
+    - 📅 Bed Reservation
+    - 🔄 Improved Real-time Updates
+    - 🤖 ML-based Bed Availability Prediction
+    """
+)
 
-        st.write(
-            f"**Hospital directory records:** "
-            f"{len(directory_df):,}"
-        )
 
-    st.caption(
-        "Hospital directory information is for "
-        "informational/search purposes. "
-        "Bed availability shown in the registered "
-        "section comes from the application's database."
-    )
+# ============================================================
+# FOOTER
+# ============================================================
 
+st.divider()
 
 st.caption(
-    "© Smart Hospital Bed Availability System"
+    "🏥 Smart Hospital Bed Availability System | "
+    "Academic/Project Prototype"
 )
+
+st.caption(
+    "Bed availability shown by this application depends on "
+    "the registered/demo hospital data available in the system."
+            )
