@@ -2,102 +2,66 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from pathlib import Path
-from datetime import datetime, date
+from datetime import date, datetime
+import math
+import html
+
+# Optional map libraries
+try:
+    import folium
+    from streamlit_folium import st_folium
+    MAP_AVAILABLE = True
+except Exception:
+    MAP_AVAILABLE = False
 
 
-# =========================================================
+# ============================================================
 # PAGE CONFIG
-# =========================================================
+# ============================================================
 
 st.set_page_config(
     page_title="Smart Hospital Bed Availability System",
     page_icon="🏥",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 
-# =========================================================
+# ============================================================
 # PATHS
-# =========================================================
+# ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-
 CSV_PATH = BASE_DIR / "hospital_directory.csv"
-
 DB_DIR = BASE_DIR / "database"
-DB_DIR.mkdir(exist_ok=True)
-
 DB_PATH = DB_DIR / "hospital.db"
 
+DB_DIR.mkdir(parents=True, exist_ok=True)
 
-# =========================================================
-# DATABASE CONNECTION
-# =========================================================
+
+# ============================================================
+# DATABASE
+# ============================================================
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
-# =========================================================
-# INITIALIZE DATABASE
-# =========================================================
+def quote_identifier(name):
+    """Safely quote a SQLite identifier."""
+    return '"' + str(name).replace('"', '""') + '"'
+
 
 def initialize_database():
-
+    """Create the new management tables if they do not exist."""
     conn = get_connection()
+    cur = conn.cursor()
 
-    # ---------------- DOCTORS ----------------
+    cur.execute(""" CREATE TABLE IF NOT EXISTS doctors ( doctor_id INTEGER PRIMARY KEY AUTOINCREMENT, hospital_name TEXT NOT NULL, doctor_name TEXT NOT NULL, department TEXT, specialization TEXT, availability_status TEXT DEFAULT 'Available', available_from TEXT, available_to TEXT, last_updated TEXT ) """)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS doctors (
-            doctor_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hospital_name TEXT NOT NULL,
-            doctor_name TEXT NOT NULL,
-            department TEXT NOT NULL,
-            specialization TEXT,
-            availability_status TEXT DEFAULT 'Available',
-            available_from TEXT,
-            available_to TEXT,
-            last_updated TEXT
-        )
-    """)
+    cur.execute(""" CREATE TABLE IF NOT EXISTS equipment ( equipment_id INTEGER PRIMARY KEY AUTOINCREMENT, hospital_name TEXT NOT NULL, equipment_name TEXT NOT NULL, total_units INTEGER DEFAULT 0, available_units INTEGER DEFAULT 0, last_updated TEXT ) """)
 
-    # ---------------- EQUIPMENT ----------------
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS equipment (
-            equipment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hospital_name TEXT NOT NULL,
-            equipment_name TEXT NOT NULL,
-            equipment_type TEXT,
-            total_units INTEGER DEFAULT 0,
-            available_units INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'Available',
-            last_updated TEXT
-        )
-    """)
-
-    # ---------------- RESERVATIONS ----------------
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS reservations (
-            reservation_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            patient_name TEXT NOT NULL,
-            patient_phone TEXT,
-            hospital_name TEXT NOT NULL,
-            reservation_type TEXT NOT NULL,
-            department TEXT,
-            doctor_name TEXT,
-            equipment_name TEXT,
-            requested_date TEXT,
-            requested_time TEXT,
-            status TEXT DEFAULT 'Pending',
-            notes TEXT,
-            created_at TEXT
-        )
-    """)
+    cur.execute(""" CREATE TABLE IF NOT EXISTS reservations ( reservation_id INTEGER PRIMARY KEY AUTOINCREMENT, patient_name TEXT NOT NULL, phone TEXT, hospital_name TEXT NOT NULL, reservation_type TEXT, department TEXT, doctor_name TEXT, equipment_name TEXT, reservation_date TEXT, reservation_time TEXT, notes TEXT, status TEXT DEFAULT 'Pending', created_at TEXT ) """)
 
     conn.commit()
     conn.close()
@@ -106,1917 +70,1353 @@ def initialize_database():
 initialize_database()
 
 
-# =========================================================
-# HOSPITAL CSV
-# =========================================================
+# ============================================================
+# GENERIC HELPERS
+# ============================================================
 
-@st.cache_data
-def load_hospital_data():
-
-    if not CSV_PATH.exists():
-        return pd.DataFrame()
-
-    try:
-        df = pd.read_csv(CSV_PATH)
-
-        # Normalize column names
-        df.columns = [
-            str(col).strip().lower().replace(" ", "_")
-            for col in df.columns
-        ]
-
-        return df
-
-    except Exception as e:
-
-        st.error(f"Unable to read hospital_directory.csv: {e}")
-
-        return pd.DataFrame()
+def normalize_text(value):
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
 
 
-hospital_df = load_hospital_data()
-
-
-# =========================================================
-# COLUMN FINDER
-# =========================================================
-
-def find_column(df, possible_names):
-
-    for name in possible_names:
-
-        if name in df.columns:
-            return name
-
-    return None
-
-
-hospital_name_col = find_column(
-    hospital_df,
-    [
-        "hospital_name",
-        "hospital",
-        "name"
-    ]
-)
-
-state_col = find_column(
-    hospital_df,
-    [
-        "state",
-        "state_name"
-    ]
-)
-
-district_col = find_column(
-    hospital_df,
-    [
-        "district",
-        "district_name"
-    ]
-)
-
-address_col = find_column(
-    hospital_df,
-    [
-        "address",
-        "hospital_address"
-    ]
-)
-
-specialties_col = find_column(
-    hospital_df,
-    [
-        "specialties",
-        "speciality",
-        "specialty"
-    ]
-)
-
-facilities_col = find_column(
-    hospital_df,
-    [
-        "facilities",
-        "facility"
-    ]
-)
-
-total_beds_col = find_column(
-    hospital_df,
-    [
-        "total_beds",
-        "total_num_beds",
-        "number_of_beds",
-        "beds"
-    ]
-)
-
-
-# =========================================================
-# HELPER FUNCTIONS
-# =========================================================
-
-def safe_number(value, default=0):
-
+def safe_int(value, default=0):
     try:
         if pd.isna(value):
             return default
-
-        return int(float(value))
-
+        return int(float(str(value).replace(",", "").strip()))
     except Exception:
         return default
 
 
-def bed_status(total_beds, available_beds):
+def safe_float(value, default=None):
+    try:
+        if pd.isna(value):
+            return default
+        return float(str(value).replace(",", "").strip())
+    except Exception:
+        return default
 
-    total_beds = safe_number(total_beds)
-    available_beds = safe_number(available_beds)
 
-    if total_beds <= 0:
+def find_column(columns, candidates):
+    """Find a column by exact/normalized candidate names."""
+    normalized = {
+        str(c).strip().lower().replace(" ", "_"): c
+        for c in columns
+    }
+
+    for candidate in candidates:
+        key = candidate.strip().lower().replace(" ", "_")
+        if key in normalized:
+            return normalized[key]
+
+    # Fuzzy fallback
+    for c in columns:
+        low = str(c).lower().replace(" ", "_")
+        for candidate in candidates:
+            if candidate.lower().replace(" ", "_") in low:
+                return c
+
+    return None
+
+
+def get_bed_status(total_beds, available_beds):
+    if available_beds is None:
         return "⚪ Unknown"
 
-    if available_beds <= 0:
+    total = safe_int(total_beds)
+    available = safe_int(available_beds)
+
+    if total <= 0:
+        return "⚪ Unknown"
+
+    if available <= 0:
         return "🔴 Full"
 
-    percentage = (available_beds / total_beds) * 100
+    percentage = (available / total) * 100
 
     if percentage <= 15:
         return "🟠 Critical"
-
     elif percentage <= 30:
         return "🟡 Low"
-
     return "🟢 Available"
 
 
-# =========================================================
-# DOCTOR FUNCTIONS
-# =========================================================
+def get_bed_color(total_beds, available_beds):
+    if available_beds is None:
+        return "blue"
 
-def add_doctor(
-    hospital,
-    doctor,
-    department,
-    specialization,
-    status,
-    from_time,
-    to_time
-):
+    total = safe_int(total_beds)
+    available = safe_int(available_beds)
 
-    conn = get_connection()
+    if total <= 0:
+        return "blue"
 
-    conn.execute("""
-        INSERT INTO doctors
-        (
-            hospital_name,
-            doctor_name,
-            department,
-            specialization,
-            availability_status,
-            available_from,
-            available_to,
-            last_updated
+    if available <= 0:
+        return "red"
+
+    percentage = (available / total) * 100
+
+    if percentage <= 15:
+        return "orange"
+    elif percentage <= 30:
+        return "beige"
+    return "green"
+
+
+def parse_coordinates(value):
+    """ Parse coordinates stored like: '11.6357989, 92.7120575' """
+    if pd.isna(value):
+        return None, None
+
+    text = str(value).strip()
+
+    if not text:
+        return None, None
+
+    try:
+        parts = [x.strip() for x in text.split(",")]
+        if len(parts) >= 2:
+            lat = float(parts[0])
+            lon = float(parts[1])
+
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                return lat, lon
+    except Exception:
+        pass
+
+    return None, None
+
+
+# ============================================================
+# HOSPITAL DIRECTORY
+# ============================================================
+
+@st.cache_data(show_spinner=False)
+def load_hospital_directory():
+    if not CSV_PATH.exists():
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_csv(
+            CSV_PATH,
+            low_memory=False,
+            encoding="utf-8",
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        hospital,
-        doctor,
-        department,
-        specialization,
-        status,
-        from_time,
-        to_time,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
+    except UnicodeDecodeError:
+        df = pd.read_csv(
+            CSV_PATH,
+            low_memory=False,
+            encoding="latin1",
+        )
 
-    conn.commit()
-    conn.close()
+    df.columns = [str(c).strip() for c in df.columns]
 
+    # Keep the ORIGINAL CSV; only create normalized working columns.
+    mapping = {
+        "hospital_name": find_column(
+            df.columns,
+            ["Hospital_Name", "hospital_name", "Hospital Name"]
+        ),
+        "state": find_column(
+            df.columns,
+            ["State", "state"]
+        ),
+        "district": find_column(
+            df.columns,
+            ["District", "district"]
+        ),
+        "address": find_column(
+            df.columns,
+            [
+                "Address_Original_First_Line",
+                "Address",
+                "address"
+            ]
+        ),
+        "pincode": find_column(
+            df.columns,
+            ["Pincode", "PIN", "pincode"]
+        ),
+        "coordinates": find_column(
+            df.columns,
+            [
+                "Location_Coordinates",
+                "Latitude_Longitude",
+                "Coordinates",
+                "coordinates"
+            ]
+        ),
+        "total_beds": find_column(
+            df.columns,
+            [
+                "Total_Num_Beds",
+                "total_num_beds",
+                "Total Beds",
+                "total_beds"
+            ]
+        ),
+        "specialties": find_column(
+            df.columns,
+            ["Specialties", "specialties"]
+        ),
+        "facilities": find_column(
+            df.columns,
+            ["Facilities", "facilities"]
+        ),
+        "emergency": find_column(
+            df.columns,
+            [
+                "Emergency_Services",
+                "Emergency Services",
+                "emergency_services"
+            ]
+        ),
+        "phone": find_column(
+            df.columns,
+            ["Telephone", "Mobile_Number", "Phone", "phone"]
+        ),
+        "website": find_column(
+            df.columns,
+            ["Website", "website"]
+        ),
+    }
 
-def get_doctors():
+    # Create working columns without modifying/removing original data.
+    for new_col, original_col in mapping.items():
+        if original_col is not None:
+            df[new_col] = df[original_col].apply(normalize_text)
+        else:
+            df[new_col] = ""
 
-    conn = get_connection()
+    # Parse map coordinates.
+    parsed = df["coordinates"].apply(parse_coordinates)
+    df["latitude"] = parsed.apply(lambda x: x[0])
+    df["longitude"] = parsed.apply(lambda x: x[1])
 
-    df = pd.read_sql_query(
-        "SELECT * FROM doctors ORDER BY hospital_name, doctor_name",
-        conn
+    df["total_beds_numeric"] = df["total_beds"].apply(
+        lambda x: safe_int(x, 0)
     )
 
-    conn.close()
+    # Remove rows without a hospital name.
+    df = df[df["hospital_name"].str.strip() != ""].copy()
 
     return df
 
 
-def update_doctor(
-    doctor_id,
-    status,
-    from_time,
-    to_time
-):
-
-    conn = get_connection()
-
-    conn.execute("""
-        UPDATE doctors
-        SET
-            availability_status = ?,
-            available_from = ?,
-            available_to = ?,
-            last_updated = ?
-        WHERE doctor_id = ?
-    """, (
-        status,
-        from_time,
-        to_time,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        doctor_id
-    ))
-
-    conn.commit()
-    conn.close()
+hospitals = load_hospital_directory()
 
 
-def delete_doctor(doctor_id):
+# ============================================================
+# BED DATA FROM SQLITE
+# ============================================================
 
-    conn = get_connection()
-
-    conn.execute(
-        "DELETE FROM doctors WHERE doctor_id = ?",
-        (doctor_id,)
-    )
-
-    conn.commit()
-    conn.close()
+def get_sqlite_tables(conn):
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    return [r[0] for r in rows]
 
 
-# =========================================================
-# EQUIPMENT FUNCTIONS
-# =========================================================
-
-def add_equipment(
-    hospital,
-    equipment_name,
-    equipment_type,
-    total_units,
-    available_units
-):
-
-    if available_units > total_units:
-        available_units = total_units
-
-    if available_units < 0:
-        available_units = 0
-
-    if total_units <= 0:
-        status = "Unavailable"
-
-    elif available_units == 0:
-        status = "Unavailable"
-
-    elif available_units <= max(1, total_units * 0.2):
-        status = "Low"
-
-    else:
-        status = "Available"
-
-    conn = get_connection()
-
-    conn.execute("""
-        INSERT INTO equipment
-        (
-            hospital_name,
-            equipment_name,
-            equipment_type,
-            total_units,
-            available_units,
-            status,
-            last_updated
+def get_table_dataframe(conn, table_name):
+    try:
+        return pd.read_sql_query(
+            f"SELECT * FROM {quote_identifier(table_name)}",
+            conn
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        hospital,
-        equipment_name,
-        equipment_type,
-        total_units,
-        available_units,
-        status,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
-
-    conn.commit()
-    conn.close()
+    except Exception:
+        return pd.DataFrame()
 
 
-def get_equipment():
-
-    conn = get_connection()
-
-    df = pd.read_sql_query(
-        """
-        SELECT *
-        FROM equipment
-        ORDER BY hospital_name, equipment_name
-        """,
-        conn
-    )
-
-    conn.close()
-
-    return df
-
-
-def update_equipment(
-    equipment_id,
-    total_units,
-    available_units
-):
-
-    if available_units > total_units:
-        available_units = total_units
-
-    if available_units < 0:
-        available_units = 0
-
-    if total_units <= 0 or available_units == 0:
-        status = "Unavailable"
-
-    elif available_units <= max(1, total_units * 0.2):
-        status = "Low"
-
-    else:
-        status = "Available"
-
-    conn = get_connection()
-
-    conn.execute("""
-        UPDATE equipment
-        SET
-            total_units = ?,
-            available_units = ?,
-            status = ?,
-            last_updated = ?
-        WHERE equipment_id = ?
-    """, (
-        total_units,
-        available_units,
-        status,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        equipment_id
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-def delete_equipment(equipment_id):
-
-    conn = get_connection()
-
-    conn.execute(
-        "DELETE FROM equipment WHERE equipment_id = ?",
-        (equipment_id,)
-    )
-
-    conn.commit()
-    conn.close()
-
-
-# =========================================================
-# RESERVATION FUNCTIONS
-# =========================================================
-
-def create_reservation(
-    patient_name,
-    patient_phone,
-    hospital,
-    reservation_type,
-    department,
-    doctor,
-    equipment,
-    requested_date,
-    requested_time,
-    notes
-):
-
-    conn = get_connection()
-
-    conn.execute("""
-        INSERT INTO reservations
-        (
-            patient_name,
-            patient_phone,
-            hospital_name,
-            reservation_type,
-            department,
-            doctor_name,
-            equipment_name,
-            requested_date,
-            requested_time,
-            status,
-            notes,
-            created_at
+def load_bed_availability_from_database():
+    """ Tries common hospital/bed table structures. This keeps the app compatible with an existing hospital.db. """
+    if not DB_PATH.exists():
+        return pd.DataFrame(
+            columns=["hospital_name", "total_beds", "available_beds"]
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        patient_name,
-        patient_phone,
-        hospital,
-        reservation_type,
-        department,
-        doctor,
-        equipment,
-        str(requested_date),
-        requested_time,
-        "Pending",
-        notes,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-def get_reservations():
 
     conn = get_connection()
 
-    df = pd.read_sql_query(
-        """
-        SELECT *
-        FROM reservations
-        ORDER BY reservation_id DESC
-        """,
-        conn
+    try:
+        tables = get_sqlite_tables(conn)
+
+        # Prefer tables whose names suggest bed/hospital information.
+        preferred = [
+            t for t in tables
+            if any(k in t.lower() for k in ["bed", "hospital"])
+        ]
+
+        # Search preferred tables first, then other tables.
+        ordered_tables = preferred + [
+            t for t in tables if t not in preferred
+        ]
+
+        for table in ordered_tables:
+            # Management tables are not bed tables.
+            if table.lower() in {"doctors", "equipment", "reservations"}:
+                continue
+
+            df = get_table_dataframe(conn, table)
+
+            if df.empty:
+                continue
+
+            hospital_col = find_column(
+                df.columns,
+                [
+                    "hospital_name",
+                    "hospital",
+                    "name",
+                    "hospital_name_text"
+                ]
+            )
+
+            available_col = find_column(
+                df.columns,
+                [
+                    "available_beds",
+                    "available_bed",
+                    "beds_available",
+                    "available"
+                ]
+            )
+
+            total_col = find_column(
+                df.columns,
+                [
+                    "total_beds",
+                    "total_bed",
+                    "beds",
+                    "total_num_beds"
+                ]
+            )
+
+            if hospital_col is None:
+                continue
+
+            if available_col is None and total_col is None:
+                continue
+
+            result = pd.DataFrame()
+            result["hospital_name"] = df[hospital_col].apply(normalize_text)
+
+            if total_col is not None:
+                result["total_beds"] = df[total_col].apply(
+                    lambda x: safe_int(x, 0)
+                )
+            else:
+                result["total_beds"] = 0
+
+            if available_col is not None:
+                result["available_beds"] = df[available_col].apply(
+                    lambda x: safe_int(x, 0)
+                )
+            else:
+                result["available_beds"] = None
+
+            result = result[
+                result["hospital_name"].str.strip() != ""
+            ].copy()
+
+            if not result.empty:
+                # If the database has multiple rows per hospital,
+                # aggregate them.
+                result = (
+                    result.groupby("hospital_name", as_index=False)
+                    .agg({
+                        "total_beds": "max",
+                        "available_beds": "max"
+                    })
+                )
+
+                return result
+
+        return pd.DataFrame(
+            columns=["hospital_name", "total_beds", "available_beds"]
+        )
+
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_bed_data_cached():
+    return load_bed_availability_from_database()
+
+
+bed_data = get_bed_data_cached()
+
+
+def attach_bed_data(df):
+    result = df.copy()
+
+    if "total_beds_numeric" not in result.columns:
+        result["total_beds_numeric"] = 0
+
+    # Directory total beds are used only as hospital directory capacity.
+    result["total_beds_display"] = result["total_beds_numeric"]
+
+    result["available_beds"] = None
+
+    if not bed_data.empty:
+        lookup = bed_data.copy()
+        lookup["hospital_key"] = (
+            lookup["hospital_name"]
+            .str.lower()
+            .str.strip()
+        )
+
+        result["hospital_key"] = (
+            result["hospital_name"]
+            .str.lower()
+            .str.strip()
+        )
+
+        result = result.merge(
+            lookup[
+                [
+                    "hospital_key",
+                    "total_beds",
+                    "available_beds"
+                ]
+            ],
+            on="hospital_key",
+            how="left",
+            suffixes=("", "_db")
+        )
+
+        result["available_beds"] = result["available_beds"].apply(
+            lambda x: None if pd.isna(x) else safe_int(x, 0)
+        )
+
+        # Prefer DB total beds when available.
+        result["total_beds_display"] = result.apply(
+            lambda row: (
+                safe_int(row["total_beds_db"], 0)
+                if "total_beds_db" in row.index
+                and safe_int(row["total_beds_db"], 0) > 0
+                else safe_int(row["total_beds_numeric"], 0)
+            ),
+            axis=1
+        )
+
+    result["occupied_beds"] = result.apply(
+        lambda row: (
+            max(
+                safe_int(row["total_beds_display"], 0)
+                - safe_int(row["available_beds"], 0),
+                0
+            )
+            if row["available_beds"] is not None
+            else None
+        ),
+        axis=1
     )
 
-    conn.close()
-
-    return df
-
-
-def update_reservation_status(
-    reservation_id,
-    status
-):
-
-    conn = get_connection()
-
-    conn.execute("""
-        UPDATE reservations
-        SET status = ?
-        WHERE reservation_id = ?
-    """, (
-        status,
-        reservation_id
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-def delete_reservation(reservation_id):
-
-    conn = get_connection()
-
-    conn.execute(
-        "DELETE FROM reservations WHERE reservation_id = ?",
-        (reservation_id,)
+    result["availability_status"] = result.apply(
+        lambda row: get_bed_status(
+            row["total_beds_display"],
+            row["available_beds"]
+        ),
+        axis=1
     )
 
-    conn.commit()
-    conn.close()
+    return result
 
 
-# =========================================================
-# HEADER
-# =========================================================
+# ============================================================
+# DISTANCE
+# ============================================================
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    radius = 6371.0
+
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(d_phi / 2) ** 2
+        + math.cos(phi1)
+        * math.cos(phi2)
+        * math.sin(d_lambda / 2) ** 2
+    )
+
+    return 2 * radius * math.asin(math.sqrt(a))
+
+
+# ============================================================
+# UI HEADER
+# ============================================================
 
 st.title("🏥 Smart Hospital Bed Availability System")
-
-st.write(
-    "Find hospitals, check bed availability, doctors, equipment "
-    "and manage reservation requests."
+st.caption(
+    "Hospital search, interactive map, hospital markers and bed availability"
 )
 
+if hospitals.empty:
+    st.error(
+        "hospital_directory.csv was not found or could not be loaded. "
+        "Keep the CSV in the same folder as app.py."
+    )
+    st.stop()
 
-# =========================================================
+
+# ============================================================
 # SIDEBAR NAVIGATION
-# =========================================================
+# ============================================================
 
 st.sidebar.title("📌 Navigation")
 
-menu = st.sidebar.radio(
+page = st.sidebar.radio(
     "Go to",
     [
         "🏠 Home",
-        "🏥 Hospital Search",
+        "🏥 Hospital Search & Map",
         "🛏️ Bed Availability",
         "👨‍⚕️ Doctor Availability",
         "🩺 Equipment Availability",
         "📋 Reservation Management",
-        "📊 Admin Dashboard"
+        "📊 Admin Dashboard",
     ]
 )
 
 
-# =========================================================
+# ============================================================
 # HOME
-# =========================================================
+# ============================================================
 
-if menu == "🏠 Home":
+if page == "🏠 Home":
 
-    st.header("🏠 Welcome")
+    st.header("🏠 Smart Hospital Bed Availability System")
 
-    col1, col2, col3, col4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
 
-    col1.metric(
-        "🏥 Hospitals",
-        len(hospital_df)
+    with c1:
+        st.metric("🏥 Hospitals in Directory", f"{len(hospitals):,}")
+
+    with c2:
+        mapped = hospitals["latitude"].notna().sum()
+        st.metric("📍 Hospitals with Coordinates", f"{mapped:,}")
+
+    with c3:
+        db_beds = len(bed_data)
+        st.metric("🛏️ Bed Records Available", f"{db_beds:,}")
+
+    st.markdown("---")
+
+    st.subheader("Main Features")
+
+    st.markdown(
+        """ - 🏥 **Hospital Search** — Search by hospital name, state, district and address. - 📍 **Interactive Map** — View hospitals as map markers. - 🛏️ **Bed Availability** — View total, available and occupied beds when bed data is available. - 👨‍⚕️ **Doctor Availability** — Manage doctor availability. - 🩺 **Equipment Availability** — Track medical equipment. - 📋 **Reservation Management** — Manage reservation requests. - 📊 **Admin Dashboard** — Monitor system statistics. """
     )
 
-    doctor_df = get_doctors()
-    equipment_df = get_equipment()
-    reservation_df = get_reservations()
-
-    col2.metric(
-        "👨‍⚕️ Doctors",
-        len(doctor_df)
+    st.info(
+        "Bed availability is shown from the connected hospital database when "
+        "matching bed records exist. The directory CSV itself is not treated "
+        "as real-time bed availability."
     )
 
-    col3.metric(
-        "🩺 Equipment",
-        len(equipment_df)
-    )
 
-    col4.metric(
-        "📋 Reservations",
-        len(reservation_df)
-    )
+# ============================================================
+# HOSPITAL SEARCH + INTERACTIVE MAP
+# ============================================================
 
-    st.divider()
-
-    st.subheader("✨ System Features")
-
-    f1, f2, f3 = st.columns(3)
-
-    with f1:
-
-        st.markdown("""
-        ### 🏥 Hospital Search
-
-        Search hospitals by:
-
-        - Hospital name
-        - State
-        - District
-        - Address
-        """)
-
-    with f2:
-
-        st.markdown("""
-        ### 🛏️ Bed Availability
-
-        Check:
-
-        - Total beds
-        - Available beds
-        - Occupied beds
-        - Availability status
-        """)
-
-    with f3:
-
-        st.markdown("""
-        ### 👨‍⚕️ Healthcare Resources
-
-        Check:
-
-        - Doctors
-        - Equipment
-        - Reservation requests
-        """)
-
-
-# =========================================================
-# HOSPITAL SEARCH
-# =========================================================
-
-elif menu == "🏥 Hospital Search":
+elif page == "🏥 Hospital Search & Map":
 
     st.header("🏥 Hospital Search")
 
-    if hospital_df.empty:
+    st.write(
+        "Search hospitals by name, state, district or address and view "
+        "matching hospitals on the interactive map."
+    )
 
-        st.error(
-            "hospital_directory.csv not found."
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        search_text = st.text_input(
+            "🔎 Search Hospital",
+            placeholder="Enter hospital name, address, state or district"
+        )
+
+    with col2:
+        states = sorted(
+            [
+                x for x in hospitals["state"].dropna().unique()
+                if str(x).strip()
+            ]
+        )
+
+        selected_state = st.selectbox(
+            "State",
+            ["All States"] + states
+        )
+
+    if selected_state != "All States":
+        district_options = sorted(
+            [
+                x for x in hospitals.loc[
+                    hospitals["state"] == selected_state,
+                    "district"
+                ].dropna().unique()
+                if str(x).strip()
+            ]
+        )
+    else:
+        district_options = sorted(
+            [
+                x for x in hospitals["district"].dropna().unique()
+                if str(x).strip()
+            ]
+        )
+
+    selected_district = st.selectbox(
+        "District",
+        ["All Districts"] + district_options
+    )
+
+    # Filter
+    filtered = hospitals.copy()
+
+    if selected_state != "All States":
+        filtered = filtered[
+            filtered["state"].str.lower()
+            == selected_state.lower()
+        ]
+
+    if selected_district != "All Districts":
+        filtered = filtered[
+            filtered["district"].str.lower()
+            == selected_district.lower()
+        ]
+
+    if search_text.strip():
+        q = search_text.strip().lower()
+
+        searchable = (
+            filtered["hospital_name"].fillna("")
+            + " "
+            + filtered["state"].fillna("")
+            + " "
+            + filtered["district"].fillna("")
+            + " "
+            + filtered["address"].fillna("")
+            + " "
+            + filtered["pincode"].fillna("")
+        ).str.lower()
+
+        filtered = filtered[searchable.str.contains(q, na=False)]
+
+    # Add bed information.
+    filtered = attach_bed_data(filtered)
+
+    # Sort hospitals with coordinates first.
+    filtered = filtered.sort_values(
+        by=["latitude", "longitude"],
+        na_position="last"
+    )
+
+    st.success(f"Found {len(filtered):,} matching hospital(s).")
+
+    # Avoid rendering thousands of markers at once.
+    MAX_MARKERS = 150
+
+    map_df = filtered[
+        filtered["latitude"].notna()
+        & filtered["longitude"].notna()
+    ].head(MAX_MARKERS).copy()
+
+    if len(filtered) > MAX_MARKERS:
+        st.info(
+            f"Showing the first {MAX_MARKERS} mapped hospitals to keep the "
+            "interactive map fast. Refine your search to see specific hospitals."
+        )
+
+    # --------------------------------------------------------
+    # MAP
+    # --------------------------------------------------------
+
+    st.subheader("📍 Interactive Hospital Map")
+
+    if MAP_AVAILABLE and not map_df.empty:
+
+        center_lat = map_df["latitude"].mean()
+        center_lon = map_df["longitude"].mean()
+
+        hospital_map = folium.Map(
+            location=[center_lat, center_lon],
+            zoom_start=5,
+            control_scale=True
+        )
+
+        for _, row in map_df.iterrows():
+
+            name = html.escape(normalize_text(row["hospital_name"]))
+            state = html.escape(normalize_text(row["state"]))
+            district = html.escape(normalize_text(row["district"]))
+            address = html.escape(normalize_text(row["address"]))
+            pincode = html.escape(normalize_text(row["pincode"]))
+
+            total = safe_int(row["total_beds_display"], 0)
+            available = row["available_beds"]
+            occupied = row["occupied_beds"]
+            status = row["availability_status"]
+
+            if available is None:
+                available_text = "Not available"
+                occupied_text = "Not available"
+            else:
+                available_text = str(safe_int(available, 0))
+                occupied_text = str(safe_int(occupied, 0))
+
+            popup_html = f""" <div style="width:280px"> <h4>🏥 {name}</h4> <b>State:</b> {state}<br> <b>District:</b> {district}<br> <b>Address:</b> {address}<br> <b>Pincode:</b> {pincode}<br><br> <b>Total Beds:</b> {total}<br> <b>Available Beds:</b> {available_text}<br> <b>Occupied Beds:</b> {occupied_text}<br> <b>Status:</b> {status} </div> """
+
+            folium.Marker(
+                location=[
+                    float(row["latitude"]),
+                    float(row["longitude"])
+                ],
+                tooltip=name,
+                popup=folium.Popup(
+                    popup_html,
+                    max_width=350
+                ),
+                icon=folium.Icon(
+                    color=get_bed_color(
+                        total,
+                        available
+                    ),
+                    icon="plus-sign",
+                    prefix="glyphicon"
+                )
+            ).add_to(hospital_map)
+
+        st_folium(
+            hospital_map,
+            width=None,
+            height=600,
+            returned_objects=[]
+        )
+
+    elif not map_df.empty:
+        # Fallback if folium/streamlit-folium isn't installed.
+        st.warning(
+            "Interactive map packages are not installed. "
+            "The fallback map is being shown."
+        )
+
+        st.map(
+            map_df.rename(
+                columns={
+                    "latitude": "lat",
+                    "longitude": "lon"
+                }
+            )[["lat", "lon"]]
         )
 
     else:
-
-        search = st.text_input(
-            "🔎 Search hospital",
-            placeholder="Hospital name, state, district..."
+        st.warning(
+            "No hospitals with valid latitude/longitude were found "
+            "for the current search."
         )
 
-        result = hospital_df.copy()
+    # --------------------------------------------------------
+    # HOSPITAL RESULTS
+    # --------------------------------------------------------
 
-        if search.strip():
+    st.subheader("🏥 Hospital Results")
 
-            text = search.strip().lower()
+    if filtered.empty:
+        st.warning("No hospitals found. Try another search.")
+    else:
 
-            mask = pd.Series(
-                False,
-                index=result.index
+        display_cols = [
+            "hospital_name",
+            "state",
+            "district",
+            "pincode",
+            "total_beds_display",
+            "available_beds",
+            "occupied_beds",
+            "availability_status"
+        ]
+
+        result_table = filtered[display_cols].copy()
+
+        result_table.columns = [
+            "Hospital",
+            "State",
+            "District",
+            "Pincode",
+            "Total Beds",
+            "Available Beds",
+            "Occupied Beds",
+            "Status"
+        ]
+
+        result_table["Available Beds"] = result_table[
+            "Available Beds"
+        ].apply(
+            lambda x: (
+                "Not available"
+                if pd.isna(x)
+                else int(x)
             )
-
-            for col in [
-                hospital_name_col,
-                state_col,
-                district_col,
-                address_col
-            ]:
-
-                if col and col in result.columns:
-
-                    mask = mask | (
-                        result[col]
-                        .fillna("")
-                        .astype(str)
-                        .str.lower()
-                        .str.contains(
-                            text,
-                            na=False
-                        )
-                    )
-
-            result = result[mask]
-
-        st.write(
-            f"### Hospitals Found: {len(result)}"
         )
 
-        for _, row in result.head(50).iterrows():
-
-            name = (
-                row[hospital_name_col]
-                if hospital_name_col
-                else "Hospital"
+        result_table["Occupied Beds"] = result_table[
+            "Occupied Beds"
+        ].apply(
+            lambda x: (
+                "Not available"
+                if pd.isna(x)
+                else int(x)
             )
+        )
 
-            with st.container(border=True):
+        st.dataframe(
+            result_table.head(200),
+            use_container_width=True,
+            hide_index=True
+        )
 
-                st.subheader(
-                    f"🏥 {name}"
-                )
+    st.markdown("---")
 
-                if state_col:
-                    st.write(
-                        f"📍 State: {row[state_col]}"
-                    )
-
-                if district_col:
-                    st.write(
-                        f"📍 District: {row[district_col]}"
-                    )
-
-                if address_col:
-                    st.write(
-                        f"🏠 Address: {row[address_col]}"
-                    )
-
-                if total_beds_col:
-
-                    st.write(
-                        f"🛏️ Listed Beds: "
-                        f"{row[total_beds_col]}"
-                    )
+    st.caption(
+        "📌 Map coordinates come from the hospital directory. "
+        "Bed availability is displayed only when corresponding bed "
+        "records are available in the database."
+    )
 
 
-# =========================================================
+# ============================================================
 # BED AVAILABILITY
-# =========================================================
+# ============================================================
 
-elif menu == "🛏️ Bed Availability":
+elif page == "🛏️ Bed Availability":
 
     st.header("🛏️ Bed Availability")
 
-    conn = get_connection()
+    current = attach_bed_data(hospitals)
 
-    tables = pd.read_sql_query(
-        """
-        SELECT name
-        FROM sqlite_master
-        WHERE type='table'
-        """,
-        conn
-    )
+    if current.empty:
+        st.warning("No hospital data available.")
+    else:
 
-    conn.close()
+        search = st.text_input(
+            "Search hospital",
+            placeholder="Enter hospital name"
+        )
 
-    table_names = tables["name"].tolist()
+        if search.strip():
+            current = current[
+                current["hospital_name"].str.contains(
+                    search.strip(),
+                    case=False,
+                    na=False
+                )
+            ]
 
-    if "hospitals" in table_names:
+        total_records = len(current)
+        known_beds = current["available_beds"].notna().sum()
+        full_count = (
+            current["availability_status"] == "🔴 Full"
+        ).sum()
+        critical_count = (
+            current["availability_status"] == "🟠 Critical"
+        ).sum()
+        low_count = (
+            current["availability_status"] == "🟡 Low"
+        ).sum()
 
-        conn = get_connection()
+        c1, c2, c3, c4 = st.columns(4)
 
-        try:
+        with c1:
+            st.metric("Hospitals", f"{total_records:,}")
 
-            bed_df = pd.read_sql_query(
-                "SELECT * FROM hospitals",
-                conn
+        with c2:
+            st.metric("Bed Records", f"{known_beds:,}")
+
+        with c3:
+            st.metric("🔴 Full", f"{full_count:,}")
+
+        with c4:
+            st.metric("🟠 Critical", f"{critical_count:,}")
+
+        if known_beds == 0:
+            st.info(
+                "No matching real/registered bed records were found in "
+                "hospital.db. The directory's Total_Num_Beds field is "
+                "hospital capacity information, not live available-bed data."
             )
 
-        except Exception:
+        bed_table = current[
+            [
+                "hospital_name",
+                "state",
+                "district",
+                "total_beds_display",
+                "available_beds",
+                "occupied_beds",
+                "availability_status"
+            ]
+        ].copy()
 
-            bed_df = pd.DataFrame()
+        bed_table.columns = [
+            "Hospital",
+            "State",
+            "District",
+            "Total Beds",
+            "Available Beds",
+            "Occupied Beds",
+            "Availability Status"
+        ]
 
-        conn.close()
-
-    else:
-
-        bed_df = pd.DataFrame()
-
-
-    if bed_df.empty:
-
-        st.info(
-            "No bed availability records are currently "
-            "available in the database."
+        bed_table["Available Beds"] = bed_table[
+            "Available Beds"
+        ].apply(
+            lambda x: (
+                "Not available"
+                if pd.isna(x)
+                else int(x)
+            )
         )
 
-        st.caption(
-            "Your hospital_directory.csv can still be used "
-            "for hospital search."
+        bed_table["Occupied Beds"] = bed_table[
+            "Occupied Beds"
+        ].apply(
+            lambda x: (
+                "Not available"
+                if pd.isna(x)
+                else int(x)
+            )
         )
-
-    else:
 
         st.dataframe(
-            bed_df,
+            bed_table.head(500),
             use_container_width=True,
             hide_index=True
         )
 
 
-# =========================================================
-# 👨‍⚕️ DOCTOR AVAILABILITY
-# =========================================================
+# ============================================================
+# DOCTOR AVAILABILITY
+# ============================================================
 
-elif menu == "👨‍⚕️ Doctor Availability":
+elif page == "👨‍⚕️ Doctor Availability":
 
     st.header("👨‍⚕️ Doctor Availability")
 
-    st.info(
-        "Doctor availability is based on registered/demo data "
-        "and may not represent live hospital availability."
-    )
+    tab1, tab2 = st.tabs(["➕ Add Doctor", "🔎 Manage Doctors"])
 
-    # ---------------- ADD DOCTOR ----------------
+    with tab1:
 
-    with st.expander(
-        "➕ Add Doctor",
-        expanded=False
-    ):
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-
-            hospital = st.text_input(
-                "🏥 Hospital Name",
-                key="doctor_hospital"
-            )
-
-            doctor = st.text_input(
-                "👨‍⚕️ Doctor Name",
-                placeholder="Dr. John Doe",
-                key="doctor_name"
-            )
-
-            department = st.selectbox(
-                "🩺 Department",
-                [
-                    "General Medicine",
-                    "Cardiology",
-                    "Neurology",
-                    "Orthopedics",
-                    "Pediatrics",
-                    "Dermatology",
-                    "Gynecology",
-                    "ENT",
-                    "Ophthalmology",
-                    "Oncology",
-                    "Pulmonology",
-                    "Gastroenterology",
-                    "Nephrology",
-                    "Urology",
-                    "Emergency Medicine",
-                    "Other"
-                ],
-                key="doctor_department"
-            )
-
-        with c2:
-
-            specialization = st.text_input(
-                "🔬 Specialization",
-                key="doctor_specialization"
-            )
+        with st.form("add_doctor_form"):
+            hospital_name = st.text_input("Hospital Name")
+            doctor_name = st.text_input("Doctor Name")
+            department = st.text_input("Department")
+            specialization = st.text_input("Specialization")
 
             status = st.selectbox(
-                "📌 Status",
-                [
-                    "Available",
-                    "Busy",
-                    "Unavailable"
-                ],
-                key="doctor_status"
+                "Availability Status",
+                ["Available", "Busy", "Unavailable"]
             )
 
-            from_time = st.text_input(
-                "⏰ Available From",
-                placeholder="10:00 AM",
-                key="doctor_from"
-            )
+            c1, c2 = st.columns(2)
 
-            to_time = st.text_input(
-                "⏰ Available To",
-                placeholder="02:00 PM",
-                key="doctor_to"
-            )
-
-        if st.button(
-            "➕ Add Doctor",
-            type="primary",
-            width="stretch"
-        ):
-
-            if not hospital.strip():
-
-                st.error(
-                    "Please enter hospital name."
+            with c1:
+                available_from = st.text_input(
+                    "Available From",
+                    value="09:00"
                 )
 
-            elif not doctor.strip():
-
-                st.error(
-                    "Please enter doctor name."
+            with c2:
+                available_to = st.text_input(
+                    "Available To",
+                    value="17:00"
                 )
 
-            else:
-
-                add_doctor(
-                    hospital,
-                    doctor,
-                    department,
-                    specialization,
-                    status,
-                    from_time,
-                    to_time
-                )
-
-                st.success(
-                    "Doctor added successfully."
-                )
-
-                st.rerun()
-
-
-    # ---------------- DOCTOR LIST ----------------
-
-    doctor_df = get_doctors()
-
-    if doctor_df.empty:
-
-        st.warning(
-            "No doctor records found."
-        )
-
-    else:
-
-        st.subheader("🔎 Search Doctor")
-
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
-
-            doctor_search = st.text_input(
-                "Doctor / Hospital",
-                key="doctor_search"
+            submitted = st.form_submit_button(
+                "Add Doctor",
+                width="stretch"
             )
 
-        with c2:
+            if submitted:
 
-            dept_list = [
-                "All"
-            ] + sorted(
-                doctor_df["department"]
-                .dropna()
-                .unique()
-                .tolist()
-            )
-
-            dept_filter = st.selectbox(
-                "Department",
-                dept_list,
-                key="doctor_dept_filter"
-            )
-
-        with c3:
-
-            status_filter = st.selectbox(
-                "Status",
-                [
-                    "All",
-                    "Available",
-                    "Busy",
-                    "Unavailable"
-                ],
-                key="doctor_status_filter"
-            )
-
-
-        filtered = doctor_df.copy()
-
-
-        if doctor_search.strip():
-
-            text = doctor_search.strip().lower()
-
-            filtered = filtered[
-                filtered["doctor_name"]
-                .fillna("")
-                .str.lower()
-                .str.contains(text, na=False)
-                |
-                filtered["hospital_name"]
-                .fillna("")
-                .str.lower()
-                .str.contains(text, na=False)
-            ]
-
-
-        if dept_filter != "All":
-
-            filtered = filtered[
-                filtered["department"] == dept_filter
-            ]
-
-
-        if status_filter != "All":
-
-            filtered = filtered[
-                filtered["availability_status"]
-                == status_filter
-            ]
-
-
-        st.write(
-            f"### 👨‍⚕️ Doctors Found: {len(filtered)}"
-        )
-
-
-        for _, row in filtered.iterrows():
-
-            status = row["availability_status"]
-
-            if status == "Available":
-
-                icon = "🟢"
-
-            elif status == "Busy":
-
-                icon = "🟡"
-
-            else:
-
-                icon = "🔴"
-
-
-            with st.container(border=True):
-
-                c1, c2 = st.columns([4, 1])
-
-                with c1:
-
-                    st.subheader(
-                        f"👨‍⚕️ {row['doctor_name']}"
+                if not hospital_name.strip() or not doctor_name.strip():
+                    st.error(
+                        "Hospital name and doctor name are required."
                     )
+                else:
+                    conn = get_connection()
 
-                    st.write(
-                        f"🏥 **Hospital:** "
-                        f"{row['hospital_name']}"
-                    )
-
-                    st.write(
-                        f"🩺 **Department:** "
-                        f"{row['department']}"
-                    )
-
-                    st.write(
-                        f"🔬 **Specialization:** "
-                        f"{row['specialization'] or 'Not specified'}"
-                    )
-
-                    st.write(
-                        f"⏰ **Time:** "
-                        f"{row['available_from'] or '-'} "
-                        f"to "
-                        f"{row['available_to'] or '-'}"
-                    )
-
-                with c2:
-
-                    st.markdown(
-                        f"## {icon}"
-                    )
-
-                    st.write(status)
-
-
-                with st.expander(
-                    "✏️ Update Status"
-                ):
-
-                    new_status = st.selectbox(
-                        "Status",
-                        [
-                            "Available",
-                            "Busy",
-                            "Unavailable"
-                        ],
-                        index=[
-                            "Available",
-                            "Busy",
-                            "Unavailable"
-                        ].index(status),
-                        key=f"ds_{row['doctor_id']}"
-                    )
-
-                    a, b = st.columns(2)
-
-                    with a:
-
-                        new_from = st.text_input(
-                            "From",
-                            value=row["available_from"] or "",
-                            key=f"df_{row['doctor_id']}"
+                    conn.execute(
+                        """ INSERT INTO doctors ( hospital_name, doctor_name, department, specialization, availability_status, available_from, available_to, last_updated ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) """,
+                        (
+                            hospital_name.strip(),
+                            doctor_name.strip(),
+                            department.strip(),
+                            specialization.strip(),
+                            status,
+                            available_from.strip(),
+                            available_to.strip(),
+                            datetime.now().isoformat(timespec="seconds")
                         )
-
-                    with b:
-
-                        new_to = st.text_input(
-                            "To",
-                            value=row["available_to"] or "",
-                            key=f"dt_{row['doctor_id']}"
-                        )
-
-
-                    if st.button(
-                        "💾 Update",
-                        key=f"du_{row['doctor_id']}"
-                    ):
-
-                        update_doctor(
-                            row["doctor_id"],
-                            new_status,
-                            new_from,
-                            new_to
-                        )
-
-                        st.success(
-                            "Doctor updated."
-                        )
-
-                        st.rerun()
-
-
-                if st.button(
-                    "🗑️ Delete",
-                    key=f"dd_{row['doctor_id']}"
-                ):
-
-                    delete_doctor(
-                        row["doctor_id"]
                     )
 
-                    st.success(
-                        "Doctor deleted."
-                    )
+                    conn.commit()
+                    conn.close()
 
+                    st.success("Doctor added successfully.")
                     st.rerun()
 
+    with tab2:
 
-# =========================================================
-# 🩺 EQUIPMENT AVAILABILITY
-# =========================================================
+        conn = get_connection()
 
-elif menu == "🩺 Equipment Availability":
+        doctors = pd.read_sql_query(
+            "SELECT * FROM doctors ORDER BY doctor_name",
+            conn
+        )
+
+        conn.close()
+
+        if doctors.empty:
+            st.info("No doctors have been added yet.")
+        else:
+
+            search = st.text_input(
+                "Search Doctor / Hospital"
+            )
+
+            if search.strip():
+                doctors = doctors[
+                    doctors["doctor_name"].str.contains(
+                        search,
+                        case=False,
+                        na=False
+                    )
+                    |
+                    doctors["hospital_name"].str.contains(
+                        search,
+                        case=False,
+                        na=False
+                    )
+                ]
+
+            st.dataframe(
+                doctors,
+                use_container_width=True,
+                hide_index=True
+            )
+
+
+# ============================================================
+# EQUIPMENT AVAILABILITY
+# ============================================================
+
+elif page == "🩺 Equipment Availability":
 
     st.header("🩺 Equipment Availability")
 
-    st.info(
-        "Equipment information is based on registered/demo "
-        "hospital data and is not guaranteed to be real-time."
+    tab1, tab2 = st.tabs(
+        ["➕ Add Equipment", "🔎 View Equipment"]
     )
 
+    with tab1:
 
-    # ---------------- ADD EQUIPMENT ----------------
+        with st.form("add_equipment_form"):
 
-    with st.expander(
-        "➕ Add Equipment",
-        expanded=False
-    ):
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-
-            hospital = st.text_input(
-                "🏥 Hospital Name",
-                key="equipment_hospital"
+            hospital_name = st.text_input(
+                "Hospital Name"
             )
 
             equipment_name = st.text_input(
-                "🩺 Equipment Name",
-                placeholder="Ventilator",
-                key="equipment_name"
+                "Equipment Name",
+                placeholder="e.g. Ventilator"
             )
 
-            equipment_type = st.text_input(
-                "📦 Equipment Type",
-                placeholder="Critical Care",
-                key="equipment_type"
-            )
+            c1, c2 = st.columns(2)
 
-        with c2:
-
-            total_units = st.number_input(
-                "Total Units",
-                min_value=0,
-                value=1,
-                step=1,
-                key="equipment_total"
-            )
-
-            available_units = st.number_input(
-                "Available Units",
-                min_value=0,
-                value=1,
-                step=1,
-                key="equipment_available"
-            )
-
-
-        if st.button(
-            "➕ Add Equipment",
-            type="primary",
-            width="stretch"
-        ):
-
-            if not hospital.strip():
-
-                st.error(
-                    "Please enter hospital name."
+            with c1:
+                total_units = st.number_input(
+                    "Total Units",
+                    min_value=0,
+                    step=1
                 )
 
-            elif not equipment_name.strip():
-
-                st.error(
-                    "Please enter equipment name."
+            with c2:
+                available_units = st.number_input(
+                    "Available Units",
+                    min_value=0,
+                    step=1
                 )
 
-            elif available_units > total_units:
-
-                st.error(
-                    "Available units cannot be greater "
-                    "than total units."
-                )
-
-            else:
-
-                add_equipment(
-                    hospital,
-                    equipment_name,
-                    equipment_type,
-                    int(total_units),
-                    int(available_units)
-                )
-
-                st.success(
-                    "Equipment added successfully."
-                )
-
-                st.rerun()
-
-
-    # ---------------- EQUIPMENT LIST ----------------
-
-    equipment_df = get_equipment()
-
-
-    if equipment_df.empty:
-
-        st.warning(
-            "No equipment records found."
-        )
-
-    else:
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-
-            equipment_search = st.text_input(
-                "🔎 Search Equipment",
-                key="equipment_search"
+            submitted = st.form_submit_button(
+                "Add Equipment",
+                width="stretch"
             )
 
-        with c2:
+            if submitted:
 
-            equipment_status = st.selectbox(
-                "Status",
-                [
-                    "All",
-                    "Available",
-                    "Low",
-                    "Unavailable"
-                ],
-                key="equipment_status"
-            )
-
-
-        filtered_equipment = equipment_df.copy()
-
-
-        if equipment_search.strip():
-
-            text = equipment_search.strip().lower()
-
-            filtered_equipment = filtered_equipment[
-                filtered_equipment["equipment_name"]
-                .fillna("")
-                .str.lower()
-                .str.contains(text, na=False)
-                |
-                filtered_equipment["hospital_name"]
-                .fillna("")
-                .str.lower()
-                .str.contains(text, na=False)
-            ]
-
-
-        if equipment_status != "All":
-
-            filtered_equipment = filtered_equipment[
-                filtered_equipment["status"]
-                == equipment_status
-            ]
-
-
-        st.write(
-            f"### 🩺 Equipment Found: "
-            f"{len(filtered_equipment)}"
-        )
-
-
-        for _, row in filtered_equipment.iterrows():
-
-            status = row["status"]
-
-            if status == "Available":
-
-                icon = "🟢"
-
-            elif status == "Low":
-
-                icon = "🟡"
-
-            else:
-
-                icon = "🔴"
-
-
-            with st.container(border=True):
-
-                c1, c2 = st.columns([4, 1])
-
-                with c1:
-
-                    st.subheader(
-                        f"🩺 {row['equipment_name']}"
+                if not hospital_name.strip() or not equipment_name.strip():
+                    st.error(
+                        "Hospital name and equipment name are required."
                     )
 
-                    st.write(
-                        f"🏥 **Hospital:** "
-                        f"{row['hospital_name']}"
+                elif available_units > total_units:
+                    st.error(
+                        "Available units cannot exceed total units."
                     )
 
-                    st.write(
-                        f"📦 **Type:** "
-                        f"{row['equipment_type'] or '-'}"
+                else:
+                    conn = get_connection()
+
+                    conn.execute(
+                        """ INSERT INTO equipment ( hospital_name, equipment_name, total_units, available_units, last_updated ) VALUES (?, ?, ?, ?, ?) """,
+                        (
+                            hospital_name.strip(),
+                            equipment_name.strip(),
+                            int(total_units),
+                            int(available_units),
+                            datetime.now().isoformat(timespec="seconds")
+                        )
                     )
 
-                    st.write(
-                        f"📊 **Available:** "
-                        f"{row['available_units']} / "
-                        f"{row['total_units']}"
-                    )
+                    conn.commit()
+                    conn.close()
 
-                    st.caption(
-                        f"Last Updated: "
-                        f"{row['last_updated']}"
-                    )
-
-                with c2:
-
-                    st.markdown(
-                        f"## {icon}"
-                    )
-
-                    st.write(status)
-
-
-                with st.expander(
-                    "✏️ Update Equipment"
-                ):
-
-                    new_total = st.number_input(
-                        "Total Units",
-                        min_value=0,
-                        value=int(row["total_units"]),
-                        step=1,
-                        key=f"et_{row['equipment_id']}"
-                    )
-
-                    new_available = st.number_input(
-                        "Available Units",
-                        min_value=0,
-                        value=int(row["available_units"]),
-                        step=1,
-                        key=f"ea_{row['equipment_id']}"
-                    )
-
-
-                    if st.button(
-                        "💾 Update",
-                        key=f"eu_{row['equipment_id']}"
-                    ):
-
-                        if new_available > new_total:
-
-                            st.error(
-                                "Available units cannot exceed total."
-                            )
-
-                        else:
-
-                            update_equipment(
-                                row["equipment_id"],
-                                int(new_total),
-                                int(new_available)
-                            )
-
-                            st.success(
-                                "Equipment updated."
-                            )
-
-                            st.rerun()
-
-
-                if st.button(
-                    "🗑️ Delete",
-                    key=f"ed_{row['equipment_id']}"
-                ):
-
-                    delete_equipment(
-                        row["equipment_id"]
-                    )
-
-                    st.success(
-                        "Equipment deleted."
-                    )
-
+                    st.success("Equipment added successfully.")
                     st.rerun()
 
+    with tab2:
 
-# =========================================================
-# 📋 RESERVATION MANAGEMENT
-# =========================================================
+        conn = get_connection()
 
-elif menu == "📋 Reservation Management":
+        equipment = pd.read_sql_query(
+            "SELECT * FROM equipment ORDER BY equipment_name",
+            conn
+        )
+
+        conn.close()
+
+        if equipment.empty:
+            st.info("No equipment has been added yet.")
+        else:
+
+            equipment["status"] = equipment.apply(
+                lambda row: (
+                    "🔴 Unavailable"
+                    if safe_int(row["available_units"]) == 0
+                    else (
+                        "🟡 Low"
+                        if (
+                            safe_int(row["total_units"]) > 0
+                            and safe_int(row["available_units"])
+                            / safe_int(row["total_units"]) <= 0.30
+                        )
+                        else "🟢 Available"
+                    )
+                ),
+                axis=1
+            )
+
+            st.dataframe(
+                equipment,
+                use_container_width=True,
+                hide_index=True
+            )
+
+
+# ============================================================
+# RESERVATION MANAGEMENT
+# ============================================================
+
+elif page == "📋 Reservation Management":
 
     st.header("📋 Reservation Management")
 
-    st.info(
-        "Reservations are requests for this project prototype. "
-        "They do not represent confirmed real-world hospital bookings."
-    )
-
-
-    # =====================================================
-    # CREATE RESERVATION
-    # =====================================================
-
-    with st.expander(
-        "➕ Create Reservation Request",
-        expanded=True
-    ):
+    with st.form("reservation_form"):
 
         c1, c2 = st.columns(2)
 
         with c1:
-
-            patient_name = st.text_input(
-                "👤 Patient Name",
-                key="reservation_patient"
-            )
-
-            patient_phone = st.text_input(
-                "📱 Phone Number",
-                key="reservation_phone"
-            )
-
-            hospital = st.text_input(
-                "🏥 Hospital Name",
-                key="reservation_hospital"
-            )
-
+            patient_name = st.text_input("Patient Name")
+            phone = st.text_input("Phone Number")
+            hospital_name = st.text_input("Hospital Name")
             reservation_type = st.selectbox(
-                "📋 Reservation Type",
+                "Reservation Type",
                 [
                     "Bed",
                     "Doctor Appointment",
                     "Equipment",
-                    "Emergency"
-                ],
-                key="reservation_type"
+                    "Other"
+                ]
             )
-
 
         with c2:
-
-            department = st.text_input(
-                "🩺 Department",
-                key="reservation_department"
+            department = st.text_input("Department")
+            doctor_name = st.text_input("Doctor Name")
+            equipment_name = st.text_input("Equipment Name")
+            reservation_date = st.date_input(
+                "Date",
+                min_value=date.today()
+            )
+            reservation_time = st.text_input(
+                "Time",
+                value="10:00"
             )
 
-            doctor = st.text_input(
-                "👨‍⚕️ Doctor Name",
-                key="reservation_doctor"
-            )
+        notes = st.text_area("Notes")
 
-            equipment = st.text_input(
-                "🩺 Equipment",
-                key="reservation_equipment"
-            )
-
-            requested_date = st.date_input(
-                "📅 Requested Date",
-                min_value=date.today(),
-                key="reservation_date"
-            )
-
-            requested_time = st.text_input(
-                "⏰ Requested Time",
-                placeholder="10:30 AM",
-                key="reservation_time"
-            )
-
-
-        notes = st.text_area(
-            "📝 Notes",
-            placeholder="Additional information..."
+        submitted = st.form_submit_button(
+            "Create Reservation",
+            width="stretch"
         )
 
+        if submitted:
 
-        if st.button(
-            "📤 Submit Reservation",
-            type="primary",
-            width="stretch"
-        ):
-
-            if not patient_name.strip():
-
+            if not patient_name.strip() or not hospital_name.strip():
                 st.error(
-                    "Please enter patient name."
+                    "Patient name and hospital name are required."
                 )
-
-            elif not hospital.strip():
-
-                st.error(
-                    "Please enter hospital name."
-                )
-
             else:
 
-                create_reservation(
-                    patient_name,
-                    patient_phone,
-                    hospital,
-                    reservation_type,
-                    department,
-                    doctor,
-                    equipment,
-                    requested_date,
-                    requested_time,
-                    notes
+                conn = get_connection()
+
+                conn.execute(
+                    """ INSERT INTO reservations ( patient_name, phone, hospital_name, reservation_type, department, doctor_name, equipment_name, reservation_date, reservation_time, notes, status, created_at ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) """,
+                    (
+                        patient_name.strip(),
+                        phone.strip(),
+                        hospital_name.strip(),
+                        reservation_type,
+                        department.strip(),
+                        doctor_name.strip(),
+                        equipment_name.strip(),
+                        str(reservation_date),
+                        reservation_time.strip(),
+                        notes.strip(),
+                        "Pending",
+                        datetime.now().isoformat(timespec="seconds")
+                    )
                 )
 
-                st.success(
-                    "✅ Reservation request submitted successfully."
-                )
+                conn.commit()
+                conn.close()
 
+                st.success("Reservation request created.")
                 st.rerun()
 
+    st.markdown("---")
 
-    # =====================================================
-    # RESERVATION LIST
-    # =====================================================
+    conn = get_connection()
 
-    reservation_df = get_reservations()
+    reservations = pd.read_sql_query(
+        "SELECT * FROM reservations ORDER BY reservation_id DESC",
+        conn
+    )
 
-    st.divider()
+    conn.close()
 
-    st.subheader("📋 Reservation Requests")
-
-
-    if reservation_df.empty:
-
-        st.info(
-            "No reservation requests yet."
-        )
-
+    if reservations.empty:
+        st.info("No reservation requests yet.")
     else:
-
-        status_filter = st.selectbox(
-            "Filter by Status",
-            [
-                "All",
-                "Pending",
-                "Confirmed",
-                "Rejected",
-                "Cancelled"
-            ]
+        st.dataframe(
+            reservations,
+            use_container_width=True,
+            hide_index=True
         )
 
 
-        display_df = reservation_df.copy()
+# ============================================================
+# ADMIN DASHBOARD
+# ============================================================
 
-
-        if status_filter != "All":
-
-            display_df = display_df[
-                display_df["status"]
-                == status_filter
-            ]
-
-
-        st.write(
-            f"### Requests: {len(display_df)}"
-        )
-
-
-        for _, row in display_df.iterrows():
-
-            status = row["status"]
-
-            if status == "Pending":
-
-                icon = "🟡"
-
-            elif status == "Confirmed":
-
-                icon = "🟢"
-
-            elif status == "Rejected":
-
-                icon = "🔴"
-
-            else:
-
-                icon = "⚪"
-
-
-            with st.container(border=True):
-
-                st.subheader(
-                    f"{icon} Reservation "
-                    f"#{row['reservation_id']}"
-                )
-
-                c1, c2 = st.columns(2)
-
-                with c1:
-
-                    st.write(
-                        f"👤 **Patient:** "
-                        f"{row['patient_name']}"
-                    )
-
-                    st.write(
-                        f"📱 **Phone:** "
-                        f"{row['patient_phone'] or '-'}"
-                    )
-
-                    st.write(
-                        f"🏥 **Hospital:** "
-                        f"{row['hospital_name']}"
-                    )
-
-                    st.write(
-                        f"📋 **Type:** "
-                        f"{row['reservation_type']}"
-                    )
-
-                with c2:
-
-                    st.write(
-                        f"📅 **Date:** "
-                        f"{row['requested_date']}"
-                    )
-
-                    st.write(
-                        f"⏰ **Time:** "
-                        f"{row['requested_time'] or '-'}"
-                    )
-
-                    st.write(
-                        f"👨‍⚕️ **Doctor:** "
-                        f"{row['doctor_name'] or '-'}"
-                    )
-
-                    st.write(
-                        f"🩺 **Equipment:** "
-                        f"{row['equipment_name'] or '-'}"
-                    )
-
-                if row["department"]:
-
-                    st.write(
-                        f"🩺 **Department:** "
-                        f"{row['department']}"
-                    )
-
-                if row["notes"]:
-
-                    st.write(
-                        f"📝 **Notes:** "
-                        f"{row['notes']}"
-                    )
-
-
-                st.markdown(
-                    f"### Status: {icon} {status}"
-                )
-
-
-                # ---------------- UPDATE ----------------
-
-                new_status = st.selectbox(
-                    "Change Status",
-                    [
-                        "Pending",
-                        "Confirmed",
-                        "Rejected",
-                        "Cancelled"
-                    ],
-                    index=[
-                        "Pending",
-                        "Confirmed",
-                        "Rejected",
-                        "Cancelled"
-                    ].index(status),
-                    key=f"rs_{row['reservation_id']}"
-                )
-
-
-                c1, c2 = st.columns(2)
-
-
-                with c1:
-
-                    if st.button(
-                        "💾 Update Status",
-                        key=f"ru_{row['reservation_id']}"
-                    ):
-
-                        update_reservation_status(
-                            row["reservation_id"],
-                            new_status
-                        )
-
-                        st.success(
-                            "Reservation status updated."
-                        )
-
-                        st.rerun()
-
-
-                with c2:
-
-                    if st.button(
-                        "🗑️ Delete",
-                        key=f"rd_{row['reservation_id']}"
-                    ):
-
-                        delete_reservation(
-                            row["reservation_id"]
-                        )
-
-                        st.success(
-                            "Reservation deleted."
-                        )
-
-                        st.rerun()
-
-
-# =========================================================
-# 📊 ADMIN DASHBOARD
-# =========================================================
-
-elif menu == "📊 Admin Dashboard":
+elif page == "📊 Admin Dashboard":
 
     st.header("📊 Admin Dashboard")
 
-    doctor_df = get_doctors()
-    equipment_df = get_equipment()
-    reservation_df = get_reservations()
+    conn = get_connection()
 
+    doctors_count = conn.execute(
+        "SELECT COUNT(*) FROM doctors"
+    ).fetchone()[0]
 
-    # ---------------- SUMMARY ----------------
+    equipment_count = conn.execute(
+        "SELECT COUNT(*) FROM equipment"
+    ).fetchone()[0]
+
+    reservations_count = conn.execute(
+        "SELECT COUNT(*) FROM reservations"
+    ).fetchone()[0]
+
+    pending_count = conn.execute(
+        "SELECT COUNT(*) FROM reservations WHERE status='Pending'"
+    ).fetchone()[0]
+
+    conn.close()
 
     c1, c2, c3, c4 = st.columns(4)
 
-    c1.metric(
-        "🏥 Hospitals",
-        len(hospital_df)
+    with c1:
+        st.metric(
+            "🏥 Hospitals",
+            f"{len(hospitals):,}"
+        )
+
+    with c2:
+        st.metric(
+            "👨‍⚕️ Doctors",
+            f"{doctors_count:,}"
+        )
+
+    with c3:
+        st.metric(
+            "🩺 Equipment Records",
+            f"{equipment_count:,}"
+        )
+
+    with c4:
+        st.metric(
+            "📋 Reservations",
+            f"{reservations_count:,}"
+        )
+
+    st.markdown("---")
+
+    st.subheader("📋 Reservation Summary")
+
+    r1, r2 = st.columns(2)
+
+    with r1:
+        st.metric(
+            "Pending Reservations",
+            f"{pending_count:,}"
+        )
+
+    with r2:
+        st.metric(
+            "Mapped Hospitals",
+            f"{hospitals['latitude'].notna().sum():,}"
+        )
+
+    st.info(
+        "The dashboard summarizes records currently stored in the "
+        "application database and hospital directory."
     )
 
-    c2.metric(
-        "👨‍⚕️ Doctors",
-        len(doctor_df)
-    )
 
-    c3.metric(
-        "🩺 Equipment",
-        len(equipment_df)
-    )
-
-    c4.metric(
-        "📋 Reservations",
-        len(reservation_df)
-    )
-
-
-    st.divider()
-
-
-    # ---------------- DOCTORS ----------------
-
-    st.subheader("👨‍⚕️ Doctor Statistics")
-
-    if not doctor_df.empty:
-
-        available = len(
-            doctor_df[
-                doctor_df["availability_status"]
-                == "Available"
-            ]
-        )
-
-        busy = len(
-            doctor_df[
-                doctor_df["availability_status"]
-                == "Busy"
-            ]
-        )
-
-        unavailable = len(
-            doctor_df[
-                doctor_df["availability_status"]
-                == "Unavailable"
-            ]
-        )
-
-        a, b, c = st.columns(3)
-
-        a.metric(
-            "🟢 Available",
-            available
-        )
-
-        b.metric(
-            "🟡 Busy",
-            busy
-        )
-
-        c.metric(
-            "🔴 Unavailable",
-            unavailable
-        )
-
-
-    # ---------------- EQUIPMENT ----------------
-
-    st.subheader("🩺 Equipment Statistics")
-
-    if not equipment_df.empty:
-
-        available_eq = len(
-            equipment_df[
-                equipment_df["status"]
-                == "Available"
-            ]
-        )
-
-        low_eq = len(
-            equipment_df[
-                equipment_df["status"]
-                == "Low"
-            ]
-        )
-
-        unavailable_eq = len(
-            equipment_df[
-                equipment_df["status"]
-                == "Unavailable"
-            ]
-        )
-
-        a, b, c = st.columns(3)
-
-        a.metric(
-            "🟢 Available",
-            available_eq
-        )
-
-        b.metric(
-            "🟡 Low",
-            low_eq
-        )
-
-        c.metric(
-            "🔴 Unavailable",
-            unavailable_eq
-        )
-
-
-    # ---------------- RESERVATIONS ----------------
-
-    st.subheader("📋 Reservation Statistics")
-
-    if not reservation_df.empty:
-
-        pending = len(
-            reservation_df[
-                reservation_df["status"]
-                == "Pending"
-            ]
-        )
-
-        confirmed = len(
-            reservation_df[
-                reservation_df["status"]
-                == "Confirmed"
-            ]
-        )
-
-        rejected = len(
-            reservation_df[
-                reservation_df["status"]
-                == "Rejected"
-            ]
-        )
-
-        a, b, c = st.columns(3)
-
-        a.metric(
-            "🟡 Pending",
-            pending
-        )
-
-        b.metric(
-            "🟢 Confirmed",
-            confirmed
-        )
-
-        c.metric(
-            "🔴 Rejected",
-            rejected
-        )
-
-
-# =========================================================
+# ============================================================
 # FOOTER
-# =========================================================
+# ============================================================
 
-st.divider()
+st.markdown("---")
 
 st.caption(
     "🏥 Smart Hospital Bed Availability System | "
-    "Project Prototype | Hospital and healthcare-resource "
-    "availability may be demo/registered data."
-            )
+    "Streamlit + SQLite + Hospital Directory + Interactive Map"
+    )
