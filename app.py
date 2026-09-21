@@ -2949,4 +2949,4 @@ st.markdown("---")
 st.caption(
     "🏥 Smart Hospital Bed Availability System | "
     "Prototype / Academic Demo"
-    )
+        )
